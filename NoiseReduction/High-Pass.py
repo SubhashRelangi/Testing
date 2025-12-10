@@ -9,7 +9,8 @@ Image = np.ndarray
 
 def subtracting_low_pass(image: Image) -> Image:
     """
-    Applies a high-pass filter by subtracting a blurred (low-pass) version of the image.
+    Applies a high-pass filter by subtracting a blurred (low-pass) version of the image
+    and returns the original image stacked horizontally with the high-pass result.
 
     This method emphasizes fine details and edges by removing the smooth, low-frequency
     components of the image. The constant 127 is added to re-center the resulting
@@ -19,97 +20,107 @@ def subtracting_low_pass(image: Image) -> Image:
         image: The input image (expected to be a grayscale NumPy array, uint8).
 
     Returns:
-        The high-pass filtered image (uint8), with details enhanced.
+        The original image horizontally stacked with the high-pass filtered image (uint8).
     """
     # Convert to float32 for precise mathematical operations
     image_float = image.astype(np.float32)
 
-    # Apply Gaussian blur (Low-pass filter). The kernel size (0, 0) and sigma=3
-    # means the kernel size is calculated automatically based on sigma.
-    # 
+    # Apply Gaussian blur (Low-pass filter). 
     blurred_img = cv.GaussianBlur(image_float, (0, 0), 3)
+    # 
 
     # High-pass = Original - Low-pass (Blur) + Offset
-    # The offset (127) shifts the mean of the result to the middle of the 0-255 range.
     high_pass_img = image_float - blurred_img + 127
 
     # Clip values to the valid 0-255 range and convert back to uint8
-    high_pass_img = np.clip(high_pass_img, 0, 255).astype(np.uint8)
+    high_pass_result = np.clip(high_pass_img, 0, 255).astype(np.uint8)
 
-    return high_pass_img
+    # Stack original and result horizontally
+    stacked_image = np.hstack([image, high_pass_result])
+    cv.imwrite("Outputs/subtracting_low_pass.png", stacked_image)
+    return stacked_image
 
 
 def convolve_with_kernel(image: Image, kernel: Image) -> Image:
     """
-    Applies a convolution using a predefined kernel (e.g., a high-pass kernel).
+    Applies a convolution using a predefined kernel (e.g., a high-pass kernel)
+    and returns the original image stacked horizontally with the convoluted result.
 
-    This function uses cv2.filter2D for 2D convolution, which is the direct
-    implementation of filtering with a specific kernel.
+    This function uses cv2.filter2D for 2D convolution.
 
     Args:
         image: The input image (expected to be a grayscale NumPy array, uint8).
         kernel: The convolution kernel (e.g., a 3x3 array for high-pass filtering).
 
     Returns:
-        The filtered image (uint8), the result of the convolution.
+        The original image horizontally stacked with the filtered image (uint8).
     """
-    # The ddepth=-1 means the output image will have the same depth (type) as the source.
-    # For a uint8 input, the result might need conversion if intermediate results
-    # exceed 255/fall below 0, but for standard kernels, this often works.
     # 
-    high_pass_image = cv.filter2D(image, ddepth=-1, kernel=kernel)
-    return high_pass_image
+    # The ddepth=-1 means the output image will have the same depth (type) as the source.
+    high_pass_result = cv.filter2D(image, ddepth=-1, kernel=kernel)
+
+    # Stack original and result horizontally
+    stacked_image = np.hstack([image, high_pass_result])
+    cv.imwrite("Outputs/convolve_with_kernel.png", stacked_image)
+    return stacked_image
 
 
 def apply_edge_detectors(image: Image, ksize: int = 3) -> Tuple[Image, Image, Image]:
     """
-    Applies common gradient-based edge detection operators (Sobel and Laplacian).
-
-    Sobel finds the gradient magnitude in X and Y directions, while Laplacian
-    finds the second-order derivative, useful for identifying sharp changes.
+    Applies common gradient-based edge detection operators (Sobel and Laplacian)
+    and returns a tuple of horizontally stacked images:
+    1. Original vs. Laplacian result.
+    2. Original vs. Sobel X result.
+    3. Original vs. Sobel Y result.
 
     Args:
         image: The input image (expected to be a grayscale NumPy array, uint8).
-        ksize: The aperture size for the Sobel operator (e.g., 3, 5, 7).
+        ksize: The aperture size for the Sobel and Laplacian operators.
 
     Returns:
-        A tuple containing: (Laplacian image, Sobel X image, Sobel Y image), all uint8.
+        A tuple containing three stacked images, all uint8.
+        (Original|Laplacian, Original|SobelX, Original|SobelY)
     """
     # 1. Laplacian Operator
-    # cv.CV_64F is used to prevent overflow, as derivatives can be negative.
+    # cv.CV_64F is used to prevent overflow
     lap = cv.Laplacian(image, cv.CV_64F, ksize=ksize)
-    # The absolute value and conversion to uint8 are necessary for visualization.
-    # 
     laplacian_8bit = np.uint8(np.absolute(lap))
-
+    # 
+    
     # 2. Sobel Operator (X-direction)
-    # dx=1, dy=0 specifies the derivative order in X and Y.
     sobelx = cv.Sobel(image, cv.CV_64F, 1, 0, ksize=ksize)
     sobelx_8bit = np.uint8(np.absolute(sobelx))
 
     # 3. Sobel Operator (Y-direction)
-    # dx=0, dy=1 specifies the derivative order in X and Y.
     sobely = cv.Sobel(image, cv.CV_64F, 0, 1, ksize=ksize)
     sobely_8bit = np.uint8(np.absolute(sobely))
     # 
 
-    return laplacian_8bit, sobelx_8bit, sobely_8bit
+    # Stack results with the original image for visualization
+    laplacian_stacked = np.hstack([image, laplacian_8bit])
+    sobelx_stacked = np.hstack([image, sobelx_8bit])
+    sobely_stacked = np.hstack([image, sobely_8bit])
+    cv.imwrite("Outputs/laplacian.png", laplacian_stacked)
+    cv.imwrite("Outputs/sobelx.png", sobelx_stacked)
+    cv.imwrite("Outputs/sobely.png", sobely_stacked)
+
+
+    return laplacian_stacked, sobelx_stacked, sobely_stacked
 
 
 def main(image_path: str):
     """
     Main function to load an image, apply various high-pass filtering techniques,
-    and display the results.
+    and display the results, showing the original and output side-by-side.
 
     Args:
         image_path: The file path to the input image.
     """
-    # Check if the image file exists
+    # Input validation and image loading
     if not os.path.exists(image_path):
         print(f"Error: Image file not found at '{image_path}'")
         sys.exit(1)
 
-    # Load the image in grayscale (0 flag)
     thermal_image = cv.imread(image_path, cv.IMREAD_GRAYSCALE)
 
     if thermal_image is None:
@@ -119,37 +130,31 @@ def main(image_path: str):
     print(f"Image loaded successfully: {thermal_image.shape}")
 
     # --- 1. Subtracting a Blurred Image (High-Pass by Subtraction) ---
-    high_pass_subtraction_img = subtracting_low_pass(image=thermal_image)
+    stacked_subtraction = subtracting_low_pass(image=thermal_image)
 
     # --- 2. Using Predefined High Pass Kernel (Convolution) ---
-    # Standard high-pass/sharpening kernel (emphasizes central pixel relative to neighbors)
     high_pass_kernel = np.array([[-1, -1, -1],
                                  [-1,  8, -1],
                                  [-1, -1, -1]], dtype=np.float32)
-    high_pass_convolution_img = convolve_with_kernel(
+    stacked_convolution = convolve_with_kernel(
         image=thermal_image,
         kernel=high_pass_kernel
     )
 
     # --- 3. Using Sobel and Laplacian Operators (Edge Detection) ---
-    laplacian_img, sobelx_img, sobely_img = apply_edge_detectors(
+    # The function now returns stacks, not just the results
+    stacked_laplacian, stacked_sobelx, stacked_sobely = apply_edge_detectors(
         image=thermal_image,
         ksize=3
     )
 
-    # --- Display Results ---
+    # --- Display Results (All are already stacked with the original) ---
 
-    # Display images from method 1 and 2
-    cv.imshow("1. Original Thermal", thermal_image)
-    cv.imshow("2. High Pass Filtered (Subtraction)", high_pass_subtraction_img)
-    cv.imshow("3. High Pass Filtered (Convolution)", high_pass_convolution_img)
-
-    # Display images from method 3
-    sobel_combined = np.hstack([sobelx_img, sobely_img])
-    laplacian_comparison = np.hstack([thermal_image, laplacian_img])
-
-    cv.imshow("4. Sobel X and Y Edges", sobel_combined)
-    cv.imshow("5. Original vs. Laplacian Edges", laplacian_comparison)
+    cv.imshow("1. Original | High Pass (Subtraction)", stacked_subtraction)
+    cv.imshow("2. Original | High Pass (Convolution Kernel)", stacked_convolution)
+    cv.imshow("3. Original | Laplacian Edge Detection", stacked_laplacian)
+    cv.imshow("4. Original | Sobel X Edge Detection", stacked_sobelx)
+    cv.imshow("5. Original | Sobel Y Edge Detection", stacked_sobely)
 
     # Wait for a key press and close all windows
     cv.waitKey(0)
@@ -159,6 +164,6 @@ def main(image_path: str):
 
 if __name__ == "__main__":
     # Define the image path here. For robustness, you could take this as a command-line argument.
-    IMAGE_FILE_PATH = "VideoFrames/frame_000000.jpg"
+    IMAGE_FILE_PATH = "/home/user1/learning/Testing/NoiseReduction/Inputs/frame_000000.jpg"
     # Execute the main function
     main(IMAGE_FILE_PATH)
