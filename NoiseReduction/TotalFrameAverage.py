@@ -1,11 +1,25 @@
+"""
+temporal_averages.py
+
+Contains two functions with identical parameter lists:
+ - total_temporal_average(...)
+ - recursive_temporal_average(...)
+
+Both return: (np.ndarray | None, metadata_dict)
+
+Exceptions:
+ - VideoOpenError
+ - InvalidParameterError
+"""
+
 from typing import Optional, Tuple, Dict, Any
+import os
 import cv2 as cv
 import numpy as np
-import os
 
 
 # ---------------------------
-# Custom Exceptions
+# Exceptions & Helper
 # ---------------------------
 class TemporalAverageError(Exception):
     pass
@@ -19,11 +33,8 @@ class InvalidParameterError(TemporalAverageError):
     pass
 
 
-# ---------------------------
-# Helper
-# ---------------------------
 def _safe_convert_to_single_channel(frame: np.ndarray) -> np.ndarray:
-    """Convert frame → single-channel float32."""
+    """Convert frame -> single-channel float32 (grayscale)."""
     if frame is None:
         raise InvalidParameterError("Input frame is None.")
 
@@ -37,26 +48,125 @@ def _safe_convert_to_single_channel(frame: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------
-# Temporal Average Function
+# Total / Running-average (incremental mean or accumulation)
 # ---------------------------
-def calculate_temporal_average_frame(
+def total_temporal_average(
     video_path: str,
     *,
     is_thermal: bool = False,
     preserve_radiometric: bool = False,
-    running_average: bool = True,
     max_frames: Optional[int] = None,
-    roi: Optional[Tuple[int, int, int, int]] = None,
+    roi: Optional[Tuple[int,int,int,int]] = None,
     output_dtype: str = "uint8",
     units: str = "raw",
     apply_normalization: bool = True,
     norm_alpha: float = 0.0,
     norm_beta: float = 255.0,
     norm_type: int = cv.NORM_MINMAX,
-    norm_dst: Optional[np.ndarray] = None,
+    show: bool = False,
+    verbose: bool = False,
+    alpha: float = 0.02,              # parity only
+    running_average_mode: bool = True
 ) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+    """
+    Full-sequence temporal averaging (incremental mean).
 
-    # ---- Validate ----
+    Args (types & meaning):
+
+      video_path (str):
+          Path to input video file.
+          Min/Max: valid file path.
+          Units: filesystem path.
+          Default: required.
+          Best case: Local SSD path.
+
+      is_thermal (bool):
+          Whether frames represent radiometric thermal data.
+          Min/Max: True/False.
+          Default: False.
+          Best case: True for calibrated thermal processing.
+
+      preserve_radiometric (bool):
+          Keep raw float radiometric values (no normalization).
+          Min/Max: True/False.
+          Default: False.
+          Best case: True when further scientific analysis is needed.
+
+      max_frames (Optional[int]):
+          Number of frames to process.
+          Min: 1, Max: video length.
+          Units: frames.
+          Default: None (all frames).
+          Best case: small value for testing, None for full accuracy.
+
+      roi (Optional[Tuple[int,int,int,int]]):
+          Region of interest as (x,y,w,h).
+          Min/Max: must fit inside frame.
+          Units: pixels.
+          Default: None.
+          Best case: cropped stable background.
+
+      output_dtype (str):
+          Output data type.
+          Options: "uint8", "float32".
+          Default: "uint8".
+          Best case: "float32" for precision.
+
+      units (str):
+          Data unit label.
+          Options: "raw", "celsius", "kelvin".
+          Default: "raw".
+          Best case: match camera specification.
+
+      apply_normalization (bool):
+          Normalize output using cv.normalize.
+          Default: True.
+          Best case: True for display, False for raw analysis.
+
+      norm_alpha (float):
+          Normalization lower bound.
+          Default: 0.0.
+          Units: intensity.
+
+      norm_beta (float):
+          Normalization upper bound.
+          Default: 255.0.
+          Units: intensity.
+
+      norm_type (int):
+          cv.normalize method.
+          Default: cv.NORM_MINMAX.
+
+      show (bool):
+          Display debug windows.
+          Default: False.
+
+      verbose (bool):
+          Add verbose info to metadata.
+          Default: False.
+
+      alpha (float):
+          Unused in total averaging (kept for API uniformity).
+          Default: 0.02.
+
+      running_average_mode (bool):
+          True → incremental mean, False → sum accumulation.
+          Default: True.
+
+    Returns:
+      avg_frame (np.ndarray | None):
+          Final averaged frame (uint8 or float32).
+      metadata (dict):
+          All processing statistics and error flags.
+    """
+
+    """
+    Compute temporal average across video using an incremental running mean
+    (or accumulation if running_average_mode=False).
+
+    """
+
+    # ---- Validate paths & params ----
     if not os.path.exists(video_path):
         raise VideoOpenError(f"Video file not found: {video_path}")
 
@@ -67,10 +177,10 @@ def calculate_temporal_average_frame(
         raise InvalidParameterError("units must be 'raw', 'celsius', or 'kelvin'.")
 
     if max_frames is not None and max_frames < 1:
-        raise InvalidParameterError("max_frames must be >=1 or None.")
+        raise InvalidParameterError("max_frames must be >= 1 or None.")
 
-    # ---- Metadata ----
-    meta = {
+    meta: Dict[str, Any] = {
+        "method": "total",
         "frames_processed": 0,
         "frame_width": None,
         "frame_height": None,
@@ -79,8 +189,9 @@ def calculate_temporal_average_frame(
         "input_max": None,
         "units": units,
         "preserve_radiometric": preserve_radiometric,
-        "error": None,
         "output_dtype": output_dtype,
+        "error": None,
+        "running_average_mode": running_average_mode,
     }
 
     cap = cv.VideoCapture(video_path)
@@ -93,13 +204,12 @@ def calculate_temporal_average_frame(
         meta["frame_width"] = W
         meta["frame_height"] = H
 
-        running_avg = None
+        accumulator: Optional[np.ndarray] = None  # dtype float64 accumulator
         global_min = np.inf
         global_max = -np.inf
-
         frames = 0
 
-        # ---- Read Frames ----
+        # Read frames
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -107,31 +217,45 @@ def calculate_temporal_average_frame(
 
             if roi is not None:
                 x, y, w, h = roi
-                frame = frame[y:y+h, x:x+w]
+                frame = frame[y:y + h, x:x + w]
 
-            cur = _safe_convert_to_single_channel(frame)
+            cur = _safe_convert_to_single_channel(frame)  # float32
             meta["input_dtype"] = str(frame.dtype)
 
             fmin, fmax = float(cur.min()), float(cur.max())
             global_min = min(global_min, fmin)
             global_max = max(global_max, fmax)
 
-            if running_avg is None:
-                running_avg = cur.astype(np.float64)
+            if accumulator is None:
+                accumulator = cur.astype(np.float64)
                 frames = 1
             else:
                 frames += 1
-                if running_average:
-                    running_avg += (cur - running_avg) / frames
+                if running_average_mode:
+                    # incremental mean update
+                    accumulator += (cur - accumulator) / frames
                 else:
-                    running_avg += cur
+                    # accumulate sum
+                    accumulator += cur
 
             if max_frames and frames >= max_frames:
                 break
 
+            # optional display (show current + accumulated/mean)
+            if show:
+                display_img = accumulator.astype(np.float32)
+                disp = np.zeros_like(display_img, dtype=np.uint8)
+                cv.normalize(display_img, disp, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+                cv.imshow("Total - Current (gray)", cv.convertScaleAbs(cur))
+                cv.imshow("Total - Accumulator", disp)
+                if cv.waitKey(1) & 0xFF == ord('q'):
+                    if verbose:
+                        print("User requested quit (q).")
+                    break
+
         cap.release()
 
-        if frames == 0:
+        if frames == 0 or accumulator is None:
             meta["error"] = "No frames processed."
             return None, meta
 
@@ -139,54 +263,358 @@ def calculate_temporal_average_frame(
         meta["input_min"] = global_min
         meta["input_max"] = global_max
 
-        avg = running_avg.astype(np.float32)
+        avg_float32 = accumulator.astype(np.float32)
 
+        # Preserve radiometric (raw float) if requested
         if preserve_radiometric:
-            return avg, meta
+            if show:
+                cv.destroyAllWindows()
+            return avg_float32, meta
 
-        # ---- Normalize ----
+        # Normalize for display / output if requested
         if apply_normalization:
-            avg = cv.normalize(avg, norm_dst, norm_alpha, norm_beta, norm_type)
-
-        # ---- Convert dtype ----
-        if output_dtype == "uint8":
-            avg = np.clip(avg, 0, 255).astype(np.uint8)
+            avg_norm = cv.normalize(avg_float32, None, norm_alpha, norm_beta, norm_type)
         else:
-            avg = avg.astype(np.float32)
+            avg_norm = avg_float32
 
-        return avg, meta
+        # Convert requested output dtype
+        if output_dtype == "uint8":
+            avg_out = np.clip(avg_norm, 0, 255).astype(np.uint8)
+        else:
+            avg_out = avg_norm.astype(np.float32)
+
+        if show:
+            cv.destroyAllWindows()
+
+        return avg_out, meta
 
     except Exception as e:
         meta["error"] = str(e)
+        try:
+            cap.release()
+        except Exception:
+            pass
+        if verbose:
+            print(f"total_temporal_average error: {e}")
         return None, meta
-    
+
 
 # ---------------------------
-# Example + Metadata Logging
+# Recursive / Exponential Moving Average
+# ---------------------------
+def recursive_temporal_average(
+    video_path: str,
+    *,
+    is_thermal: bool = False,
+    preserve_radiometric: bool = False,
+    max_frames: Optional[int] = None,
+    roi: Optional[Tuple[int, int, int, int]] = None,
+    output_dtype: str = "uint8",
+    units: str = "raw",
+    apply_normalization: bool = True,
+    norm_alpha: float = 0.0,
+    norm_beta: float = 255.0,
+    norm_type: int = cv.NORM_MINMAX,
+    show: bool = False,
+    verbose: bool = False,
+    alpha: float = 0.02,  # used by recursive averaging
+    running_average_mode: bool = True,  # present for signature parity but ignored here
+) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+    """
+    Recursive exponential-moving-average over frames:
+        O_new = (1 - alpha) * O_old + alpha * I_k
+
+    Same parameter list as total_temporal_average (alpha used here).
+
+    Args (types & meaning):
+
+      video_path (str):
+          Path to input video file.
+          Min/Max: valid file path.
+          Units: filesystem path.
+          Default: required.
+          Best case: Local SSD path.
+
+      is_thermal (bool):
+          Whether frames represent radiometric thermal data.
+          Min/Max: True/False.
+          Default: False.
+          Best case: True for calibrated thermal processing.
+
+      preserve_radiometric (bool):
+          Keep raw float radiometric values (no normalization).
+          Min/Max: True/False.
+          Default: False.
+          Best case: True when further scientific analysis is needed.
+
+      max_frames (Optional[int]):
+          Number of frames to process.
+          Min: 1, Max: video length.
+          Units: frames.
+          Default: None (all frames).
+          Best case: small value for testing, None for full accuracy.
+
+      roi (Optional[Tuple[int,int,int,int]]):
+          Region of interest as (x,y,w,h).
+          Min/Max: must fit inside frame.
+          Units: pixels.
+          Default: None.
+          Best case: cropped stable background.
+
+      output_dtype (str):
+          Output data type.
+          Options: "uint8", "float32".
+          Default: "uint8".
+          Best case: "float32" for precision.
+
+      units (str):
+          Data unit label.
+          Options: "raw", "celsius", "kelvin".
+          Default: "raw".
+          Best case: match camera specification.
+
+      apply_normalization (bool):
+          Normalize output using cv.normalize.
+          Default: True.
+          Best case: True for display, False for raw analysis.
+
+      norm_alpha (float):
+          Normalization lower bound.
+          Default: 0.0.
+          Units: intensity.
+
+      norm_beta (float):
+          Normalization upper bound.
+          Default: 255.0.
+          Units: intensity.
+
+      norm_type (int):
+          cv.normalize method.
+          Default: cv.NORM_MINMAX.
+
+      show (bool):
+          Display debug windows.
+          Default: False.
+
+      verbose (bool):
+          Add verbose info to metadata.
+          Default: False.
+
+      alpha (float):
+          Exponential filter weight used in recursive update:
+              O_new = (1 - alpha) * O_old + alpha * I_k
+          Min/Max: (0.0, 1.0]
+          Units: unitless
+          Default: 0.02
+          Best case: 0.01-0.05 for stable background; larger for faster adaptation.
+
+      running_average_mode (bool):
+          Present for API uniformity; ignored by recursive method.
+          Default: True.
+
+    Returns:
+      avg_frame (np.ndarray | None):
+          Final recursively averaged frame (uint8 or float32).
+      metadata (dict):
+          All processing statistics and error flags.
+    """
+
+    # ---- Validate paths & params ----
+    if not os.path.exists(video_path):
+        raise VideoOpenError(f"Video file not found: {video_path}")
+
+    if not (0.0 < alpha <= 1.0):
+        raise InvalidParameterError("alpha must be in (0.0, 1.0].")
+
+    if output_dtype not in ("uint8", "float32"):
+        raise InvalidParameterError("output_dtype must be 'uint8' or 'float32'.")
+
+    if units not in ("raw", "celsius", "kelvin"):
+        raise InvalidParameterError("units must be 'raw', 'celsius', or 'kelvin'.")
+
+    if max_frames is not None and max_frames < 1:
+        raise InvalidParameterError("max_frames must be >= 1 or None.")
+
+    meta: Dict[str, Any] = {
+        "method": "recursive",
+        "frames_processed": 0,
+        "frame_width": None,
+        "frame_height": None,
+        "input_dtype": None,
+        "input_min": None,
+        "input_max": None,
+        "units": units,
+        "preserve_radiometric": preserve_radiometric,
+        "output_dtype": output_dtype,
+        "error": None,
+        "alpha": alpha,
+    }
+
+    cap = cv.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise VideoOpenError("Unable to open video.")
+
+    try:
+        # initialize with first frame
+        ret, frame_1 = cap.read()
+        if not ret:
+            cap.release()
+            meta["error"] = "Video is empty."
+            return None, meta
+
+        if roi is not None:
+            x, y, w, h = roi
+            frame_1 = frame_1[y:y + h, x:x + w]
+
+        I1 = _safe_convert_to_single_channel(frame_1)
+        accumulator = I1.astype(np.float64)  # high-precision accumulator
+        meta["input_dtype"] = str(frame_1.dtype)
+        global_min = float(I1.min())
+        global_max = float(I1.max())
+        frames = 1
+
+        if verbose:
+            print("Accumulator initialized with the first frame (recursive).")
+
+        weight_old = 1.0 - alpha
+        weight_new = alpha
+
+        while True:
+            ret, frame_k = cap.read()
+            if not ret:
+                break
+
+            if roi is not None:
+                x, y, w, h = roi
+                frame_k = frame_k[y:y + h, x:x + w]
+
+            cur = _safe_convert_to_single_channel(frame_k)
+
+            # shape check
+            if cur.shape != accumulator.shape:
+                if verbose:
+                    print("Warning: frame shape mismatch; stopping.")
+                break
+
+            # update accumulator using addWeighted (same approach as you had)
+            accumulator = cv.addWeighted(
+                accumulator, weight_old,
+                cur.astype(np.float64), weight_new,
+                0.0
+            )
+
+            frames += 1
+            # update global min/max
+            fmin, fmax = float(cur.min()), float(cur.max())
+            global_min = min(global_min, fmin)
+            global_max = max(global_max, fmax)
+
+            if max_frames and frames >= max_frames:
+                break
+
+            # optional display
+            if show:
+                disp = np.zeros_like(accumulator, dtype=np.uint8)
+                cv.normalize(accumulator, disp, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+                cv.imshow("Recursive - Current (gray)", cv.convertScaleAbs(cur))
+                cv.imshow("Recursive - Accumulator", disp)
+                if cv.waitKey(1) & 0xFF == ord('q'):
+                    if verbose:
+                        print("User requested quit (q).")
+                    break
+
+        cap.release()
+
+        meta["frames_processed"] = frames
+        meta["frame_width"] = int(accumulator.shape[1])
+        meta["frame_height"] = int(accumulator.shape[0])
+        meta["input_min"] = global_min
+        meta["input_max"] = global_max
+
+        if show:
+            cv.destroyAllWindows()
+
+        avg_float32 = accumulator.astype(np.float32)
+
+        if preserve_radiometric:
+            return avg_float32, meta
+
+        if apply_normalization:
+            avg_norm = cv.normalize(avg_float32, None, norm_alpha, norm_beta, norm_type)
+        else:
+            avg_norm = avg_float32
+
+        if output_dtype == "uint8":
+            avg_out = np.clip(avg_norm, 0, 255).astype(np.uint8)
+        else:
+            avg_out = avg_norm.astype(np.float32)
+
+        return avg_out, meta
+
+    except Exception as e:
+        meta["error"] = str(e)
+        try:
+            cap.release()
+        except Exception:
+            pass
+        if verbose:
+            print(f"recursive_temporal_average error: {e}")
+        return None, meta
+
+
+# ---------------------------
+# Example usage (when run as script)
 # ---------------------------
 if __name__ == "__main__":
-
     VIDEO = "/home/user1/learning/Testing/Videos/video.mp4"
 
-    avg, meta = calculate_temporal_average_frame(
+    # Example 1: total mean (same signature)
+    avg_total, meta_total = total_temporal_average(
         VIDEO,
         is_thermal=False,
         preserve_radiometric=False,
+        max_frames=None,
+        roi=None,
         output_dtype="uint8",
+        units="raw",
         apply_normalization=True,
         norm_alpha=0,
         norm_beta=255,
-        norm_type=cv.NORM_MINMAX
+        norm_type=cv.NORM_MINMAX,
+        show=False,
+        verbose=True,
+        alpha=0.02,               # present but ignored by total
+        running_average_mode=True,  # incremental mean
     )
+    print("TOTAL meta:", meta_total)
 
-    print("\n========== TEMPORAL AVERAGING METADATA ==========")
-    for key, val in meta.items():
-        print(f"{key:20}: {val}")
-    print("=================================================\n")
+    # Example 2: recursive average (same signature)
+    avg_rec, meta_rec = recursive_temporal_average(
+        VIDEO,
+        is_thermal=False,
+        preserve_radiometric=False,
+        max_frames=None,
+        roi=None,
+        output_dtype="uint8",
+        units="raw",
+        apply_normalization=True,
+        norm_alpha=0,
+        norm_beta=255,
+        norm_type=cv.NORM_MINMAX,
+        show=False,
+        verbose=True,
+        alpha=0.02,               # used by recursive
+        running_average_mode=True,  # ignored by recursive
+    )
+    print("RECURSIVE meta:", meta_rec)
 
-    if avg is not None:
-        cv.imshow("Temporal Average Frame", avg)
+    # display results if available
+    if avg_total is not None:
+        cv.imshow("Total Frame Average Result", avg_total if avg_total.dtype == np.uint8 else cv.convertScaleAbs(avg_total))
         cv.waitKey(0)
         cv.destroyAllWindows()
-    else:
-        print("ERROR:", meta["error"])
+
+    if avg_rec is not None:
+        cv.imshow("Recursive Frame Average Result", avg_rec if avg_rec.dtype == np.uint8 else cv.convertScaleAbs(avg_rec))
+        cv.waitKey(0)
+        cv.destroyAllWindows()

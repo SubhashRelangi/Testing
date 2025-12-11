@@ -8,7 +8,7 @@ from typing import Optional, Union, Tuple
 Image = np.ndarray
 
 # Define the output directory at the module level for consistency
-OUTPUT_DIR = "Sharpening/Outputs"
+OUTPUT_DIR = "/home/user1/learning/Testing/StructureModule/Outputs"
 
 
 def ensure_output_directory(output_dir: str):
