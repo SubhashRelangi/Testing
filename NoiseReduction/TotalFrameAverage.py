@@ -1,113 +1,192 @@
+from typing import Optional, Tuple, Dict, Any
 import cv2 as cv
 import numpy as np
+import os
 
-def calculate_temporal_average_frame(video_path: str, is_thermal: bool = False) -> np.ndarray | None:
-    """
-    Calculates the temporal average of all frames in a video sequence.
 
-    This technique is used to create a static background image by averaging 
-    pixel intensities over time, effectively reducing random noise and 
-    blurring out moving objects.
+# ---------------------------
+# Custom Exceptions
+# ---------------------------
+class TemporalAverageError(Exception):
+    pass
 
-    Args:
-        video_path (str): The file path to the input video.
-        is_thermal (bool): Set to True if the input video is a single-channel 
-                           thermal sequence. Skips BGR-to-Grayscale conversion. 
-                           Defaults to False (assuming standard color video).
 
-    Returns:
-        np.ndarray or None: A single 2D NumPy array representing the 
-                            averaged frame, scaled and converted to 8-bit (uint8), 
-                            or None if the video cannot be processed.
-    """
-    # 1. Video Capture and Robust Error Handling
-    video = cv.VideoCapture(video_path)
+class VideoOpenError(TemporalAverageError):
+    pass
 
-    if not video.isOpened():
-        print(f"ERROR: Could not open video file at '{video_path}'")
-        return None
-    
-    # 2. Get Video Properties (Dimensions and Frame Count)
+
+class InvalidParameterError(TemporalAverageError):
+    pass
+
+
+# ---------------------------
+# Helper
+# ---------------------------
+def _safe_convert_to_single_channel(frame: np.ndarray) -> np.ndarray:
+    """Convert frame → single-channel float32."""
+    if frame is None:
+        raise InvalidParameterError("Input frame is None.")
+
+    if frame.ndim == 2:
+        return frame.astype(np.float32)
+
+    if frame.ndim == 3:
+        return cv.cvtColor(frame, cv.COLOR_BGR2GRAY).astype(np.float32)
+
+    raise InvalidParameterError(f"Unsupported frame ndim: {frame.ndim}")
+
+
+# ---------------------------
+# Temporal Average Function
+# ---------------------------
+def calculate_temporal_average_frame(
+    video_path: str,
+    *,
+    is_thermal: bool = False,
+    preserve_radiometric: bool = False,
+    running_average: bool = True,
+    max_frames: Optional[int] = None,
+    roi: Optional[Tuple[int, int, int, int]] = None,
+    output_dtype: str = "uint8",
+    units: str = "raw",
+    apply_normalization: bool = True,
+    norm_alpha: float = 0.0,
+    norm_beta: float = 255.0,
+    norm_type: int = cv.NORM_MINMAX,
+    norm_dst: Optional[np.ndarray] = None,
+) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+
+    # ---- Validate ----
+    if not os.path.exists(video_path):
+        raise VideoOpenError(f"Video file not found: {video_path}")
+
+    if output_dtype not in ("uint8", "float32"):
+        raise InvalidParameterError("output_dtype must be 'uint8' or 'float32'.")
+
+    if units not in ("raw", "celsius", "kelvin"):
+        raise InvalidParameterError("units must be 'raw', 'celsius', or 'kelvin'.")
+
+    if max_frames is not None and max_frames < 1:
+        raise InvalidParameterError("max_frames must be >=1 or None.")
+
+    # ---- Metadata ----
+    meta = {
+        "frames_processed": 0,
+        "frame_width": None,
+        "frame_height": None,
+        "input_dtype": None,
+        "input_min": None,
+        "input_max": None,
+        "units": units,
+        "preserve_radiometric": preserve_radiometric,
+        "error": None,
+        "output_dtype": output_dtype,
+    }
+
+    cap = cv.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise VideoOpenError("Unable to open video.")
+
     try:
-        # Get properties using the dedicated constants
-        W = int(video.get(cv.CAP_PROP_FRAME_WIDTH))
-        H = int(video.get(cv.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(video.get(cv.CAP_PROP_FRAME_COUNT))
-    except Exception as e:
-        print(f"ERROR: Failed to retrieve video properties: {e}")
-        video.release()
-        return None
+        W = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
+        H = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+        meta["frame_width"] = W
+        meta["frame_height"] = H
 
-    print(f"Processing Video: H={H}, W={W}, Total Frames={frame_count}")
+        running_avg = None
+        global_min = np.inf
+        global_max = -np.inf
 
-    # 3. Initialize Accumulator
-    # Use float64 to prevent integer overflow when summing many frames.
-    # The shape is (H, W) because we ensure the frame is single-channel before summing.
-    sum_frames = np.zeros((H, W), dtype=np.float64)
-    frames_processed = 0
+        frames = 0
 
-    # 4. Accumulation Loop
-    while True:
-        ret, frame = video.read()
-        if not ret:
-            # Breaks if frame read fails (end of file or read error)
-            break
-        
-        # Determine Frame Format based on 'is_thermal' flag
-        if is_thermal:
-            # For thermal (already single-channel or need specific handling)
-            if frame.ndim == 3:
-                # If OpenCV reads it as BGR (3D), assume all channels are identical 
-                # and extract one channel for simplicity and correct dimensionality.
-                current_frame = frame[:, :, 0]
+        # ---- Read Frames ----
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if roi is not None:
+                x, y, w, h = roi
+                frame = frame[y:y+h, x:x+w]
+
+            cur = _safe_convert_to_single_channel(frame)
+            meta["input_dtype"] = str(frame.dtype)
+
+            fmin, fmax = float(cur.min()), float(cur.max())
+            global_min = min(global_min, fmin)
+            global_max = max(global_max, fmax)
+
+            if running_avg is None:
+                running_avg = cur.astype(np.float64)
+                frames = 1
             else:
-                current_frame = frame
+                frames += 1
+                if running_average:
+                    running_avg += (cur - running_avg) / frames
+                else:
+                    running_avg += cur
+
+            if max_frames and frames >= max_frames:
+                break
+
+        cap.release()
+
+        if frames == 0:
+            meta["error"] = "No frames processed."
+            return None, meta
+
+        meta["frames_processed"] = frames
+        meta["input_min"] = global_min
+        meta["input_max"] = global_max
+
+        avg = running_avg.astype(np.float32)
+
+        if preserve_radiometric:
+            return avg, meta
+
+        # ---- Normalize ----
+        if apply_normalization:
+            avg = cv.normalize(avg, norm_dst, norm_alpha, norm_beta, norm_type)
+
+        # ---- Convert dtype ----
+        if output_dtype == "uint8":
+            avg = np.clip(avg, 0, 255).astype(np.uint8)
         else:
-            # Standard procedure: Convert BGR frame to Grayscale (single channel)
-            current_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+            avg = avg.astype(np.float32)
 
-        # Accumulate: Convert current_frame to float64, then ADD it to the sum
-        sum_frames += current_frame.astype(np.float64)
-        
-        frames_processed += 1
-        
-        # Safety break if frame count is zero or unreliable
-        if frame_count > 0 and frames_processed >= frame_count:
-             break
+        return avg, meta
 
-
-    # Release the video object immediately after processing
-    video.release()
-
-    # 5. Final Calculation and Post-Processing
-    if frames_processed == 0:
-        print("WARNING: No frames were successfully processed.")
-        return None
-        
-    # Calculate the average
-    average_frame = sum_frames / frames_processed
+    except Exception as e:
+        meta["error"] = str(e)
+        return None, meta
     
-    # Normalize and Convert for Display: 
-    # Normalization (NORM_MINMAX) scales the float range (0 to ~255) 
-    # to the full 0-255 8-bit integer range for optimal visualization.
-    avg_norm = cv.normalize(
-        average_frame, None, 0, 255, cv.NORM_MINMAX, dtype=cv.CV_8U
+
+# ---------------------------
+# Example + Metadata Logging
+# ---------------------------
+if __name__ == "__main__":
+
+    VIDEO = "/home/user1/learning/Testing/Videos/video.mp4"
+
+    avg, meta = calculate_temporal_average_frame(
+        VIDEO,
+        is_thermal=False,
+        preserve_radiometric=False,
+        output_dtype="uint8",
+        apply_normalization=True,
+        norm_alpha=0,
+        norm_beta=255,
+        norm_type=cv.NORM_MINMAX
     )
-    
-    print(f"Successfully processed {frames_processed} frames. Returning averaged frame.")
-    return avg_norm
 
-# --- Main Execution Block (Industrial Standard) ---
-if __name__ == '__main__':
-    VIDEO_FILE = 'Videos/video.mp4'
-    
-    # 1. Calculate Average Frame
-    # Pass 'is_thermal=True' if using a thermal video.
-    averaged_image = calculate_temporal_average_frame(VIDEO_FILE, is_thermal=False)
-    
-    # 2. Display Result
-    if averaged_image is not None:
-        cv.imshow("Temporal Frame Average (Industrial Standard)", averaged_image)
+    print("\n========== TEMPORAL AVERAGING METADATA ==========")
+    for key, val in meta.items():
+        print(f"{key:20}: {val}")
+    print("=================================================\n")
+
+    if avg is not None:
+        cv.imshow("Temporal Average Frame", avg)
         cv.waitKey(0)
-        
-    cv.destroyAllWindows()
+        cv.destroyAllWindows()
+    else:
+        print("ERROR:", meta["error"])
