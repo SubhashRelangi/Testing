@@ -1,125 +1,177 @@
 """
 heatmap_gradientmap.py
 
-Both functions use the same standardized structure:
- - heat_map(...)
- - gradient_map(...)
+Thermal Image Visualization Utilities
+
+Exports:
+    - heat_map(gray_image, ...)
+    - gradient_map(gray_image, ...)
 
 Both return:
-    (result_image | None, metadata_dict)
+    (output_image | None, metadata_dict)
 
-All internal constants removed — fully parameterized.
-Exception handling included.
+This module:
+    ✔ Provides full parameter documentation (description, min/max, units, defaults, best-case)
+    ✔ Performs strict validation & exception handling
+    ✔ Produces clean 3-channel BGR heatmaps
+    ✔ Does NOT perform any stacking or concatenation
+    ✔ Does NOT show images or print anything (library-safe)
 """
 
 import cv2 as cv
 import numpy as np
-from typing import Optional, Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 
-Image = np.ndarray
-
-
-# -------------------------------
+# ---------------------------------
 # Exceptions
-# -------------------------------
+# ---------------------------------
 class HeatMapError(Exception):
+    """Base exception for heatmap operations."""
     pass
 
 
 class InvalidParameterErrorHM(HeatMapError):
+    """Raised when invalid input or parameters are provided."""
     pass
 
 
-# -------------------------------
-# Helper
-# -------------------------------
+# ---------------------------------
+# Helpers
+# ---------------------------------
 def _to_uint8(img: np.ndarray) -> np.ndarray:
+    """
+    Safely convert any numeric image → uint8
+
+    Behavior:
+        - NaN → 0
+        - +INF → 255
+        - -INF → 0
+        - Clip range [0,255]
+    """
     arr = np.asarray(img, dtype=np.float32)
-    arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
-    arr = np.clip(arr, 0.0, 255.0)
+    arr = np.nan_to_num(arr, nan=0, posinf=255, neginf=0)
+    arr = np.clip(arr, 0, 255)
     return arr.astype(np.uint8)
 
 
+def _ensure_grayscale(img: np.ndarray) -> np.ndarray:
+    """Ensures input is a valid single-channel numeric image."""
+    if img is None:
+        raise InvalidParameterErrorHM("Input image is None")
+
+    arr = np.asarray(img)
+
+    if arr.ndim != 2:
+        raise InvalidParameterErrorHM("Image must be single-channel (H×W), not multi-channel")
+
+    if not np.issubdtype(arr.dtype, np.number):
+        raise InvalidParameterErrorHM("Image dtype must be numeric")
+
+    return arr
+
+
 # ============================================================
-# 1. HEAT MAP (applies colormap to raw grayscale)
+# 1. HEAT MAP
 # ============================================================
 def heat_map(
-    gray_image: Image,
+    gray_image: np.ndarray,
     *,
     colormap: int = cv.COLORMAP_JET,
     normalize: bool = False,
-    norm_alpha: float = 0.0,
-    norm_beta: float = 255.0,
+    norm_alpha: float = 0.0,   # units: intensity
+    norm_beta: float = 255.0,  # units: intensity
     norm_type: int = cv.NORM_MINMAX,
-) -> Tuple[Optional[Image], Dict[str, Any]]:
+) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
     """
-    Create a heatmap from a grayscale image using a configurable colormap.
+    Generate a 3-channel BGR heatmap from a 1-channel grayscale image.
 
-    Args:
-      gray_image (Image):
-          Input thermal/grayscale image.
+    PARAMETERS
+    ----------
+    gray_image : ndarray
+        Description: Input thermal / grayscale image (single-channel)
+        Units: pixel intensity
+        Min/Max: float or uint types accepted
+        Best case: float32 or uint16 raw sensor data
 
-      colormap (int):
-          OpenCV colormap constant.
-          Min/Max: must be valid cv.COLORMAP_*
-          Default: cv.COLORMAP_JET
-          Best case: JET for thermal visualization.
+    colormap : int
+        Description: OpenCV colormap constant
+        Min/Max: must match cv.COLORMAP_* constants
+        Default: cv.COLORMAP_JET
+        Best-case: JET or TURBO for thermal contrast
 
-      normalize (bool):
-          Whether to normalize grayscale before mapping.
-          Default: False
+    normalize : bool
+        Description: Whether to apply cv.normalize before colormap
+        Units: boolean
+        Min/Max: True/False
+        Default: False
+        Best-case: True for raw thermal sensor floats
 
-      norm_alpha, norm_beta, norm_type:
-          Normalization parameters if normalize=True.
+    norm_alpha / norm_beta : float
+        Description: Output normalization intensity range
+        Units: intensity values
+        Min/Max: typically 0 → 255
+        Default: 0, 255
+        Best-case: 0–255 for heatmaps
 
-    Returns:
-      heatmap (Image | None)
-      metadata (dict)
+    norm_type : int
+        Description: OpenCV normalization type
+        Default: cv.NORM_MINMAX
+
+    RETURNS
+    -------
+    heatmap : ndarray | None
+        3-channel BGR heatmap (H×W×3), uint8
+
+    metadata : dict
+        Contains:
+            - method
+            - shape
+            - dtype
+            - colormap used
+            - normalized flag
+            - error message (None if success)
     """
-    meta: Dict[str, Any] = {"method": "heat_map", "error": None}
+    meta = {"method": "heat_map", "error": None}
 
     try:
-        if gray_image is None:
-            raise InvalidParameterErrorHM("gray_image is None")
-        if gray_image.ndim != 2:
-            raise InvalidParameterErrorHM("gray_image must be single-channel")
+        img = _ensure_grayscale(gray_image)
 
         if normalize:
-            gray_norm = cv.normalize(gray_image, None, norm_alpha, norm_beta, norm_type)
-            gray_u8 = _to_uint8(gray_norm)
+            img_norm = cv.normalize(img, None, norm_alpha, norm_beta, norm_type)
+            img_u8 = _to_uint8(img_norm)
         else:
-            gray_u8 = _to_uint8(gray_image)
+            img_u8 = _to_uint8(img)
 
-        heatmap = cv.applyColorMap(gray_u8, colormap)
+        heat = cv.applyColorMap(img_u8, int(colormap))
 
         meta.update({
-            "shape": heatmap.shape,
-            "dtype": heatmap.dtype.name,
+            "shape": heat.shape,
+            "dtype": heat.dtype.name,
             "normalized": normalize,
             "colormap": colormap,
         })
 
-        return heatmap, meta
+        return heat, meta
 
     except HeatMapError as he:
         meta["error"] = str(he)
         return None, meta
 
     except Exception as ex:
-        meta["error"] = f"runtime: {ex}"
+        meta["error"] = f"Runtime error: {ex}"
         return None, meta
 
 
 # ============================================================
-# 2. GRADIENT MAP (Sobel → magnitude → heatmap)
+# 2. GRADIENT MAP
 # ============================================================
 def gradient_map(
-    gray_image: Image,
+    gray_image: np.ndarray,
     *,
-    dx: int = 1,
-    dy: int = 1,
+    dx: int = 1,   # units: sobel order
+    dy: int = 1,   # units: sobel order
     ddepth: int = cv.CV_64F,
-    ksize: int = 3,
+    ksize: int = 3,  # units: pixels
     sobel_scale: float = 1.0,
     sobel_delta: float = 0.0,
     sobel_border: int = cv.BORDER_DEFAULT,
@@ -128,61 +180,93 @@ def gradient_map(
     norm_beta: float = 255,
     norm_type: int = cv.NORM_MINMAX,
     colormap: int = cv.COLORMAP_JET,
-) -> Tuple[Optional[Image], Dict[str, Any]]:
+) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
     """
-    Compute gradient heatmap using Sobel → magnitude → colormap.
+    Compute Sobel gradient magnitude → normalize → colorize (3-channel).
 
-    Args:
-      dx, dy:
-          Gradient direction orders.
-          Min/Max: 0–2
-          Default: 1,1
+    PARAMETERS
+    ----------
+    gray_image : ndarray
+        Description: Input thermal / grayscale data
+        Units: pixel intensity
+        Min/Max: float or uint types
+        Best-case: float32
 
-      ddepth (int):
-          Sobel output depth.
-          Default: cv.CV_64F
+    dx, dy : int
+        Description: Sobel derivative order in x and y
+        Min/Max: 0–2
+        Default: 1,1
+        Best-case: dx=1, dy=1 for full gradient
 
-      ksize (int):
-          Kernel size: 1,3,5,7
-          Default: 3
+    ddepth : int
+        Description: Output depth type
+        Default: CV_64F (best precision)
 
-      sobel_scale (float):
-          Multiply gradient output.
-          Default: 1.0
+    ksize : int
+        Description: Sobel kernel size
+        Units: pixels
+        Min/Max: 1,3,5,7
+        Default: 3
+        Best-case: 3 (balanced detail)
 
-      sobel_delta (float):
-          Added to gradient result.
-          Default: 0.0
+    sobel_scale : float
+        Min/Max: >0
+        Default: 1.0
+        Units: multiplier
 
-      sobel_border (int):
-          Border handling type.
-          Default: cv.BORDER_DEFAULT
+    sobel_delta : float
+        Min/Max: any float
+        Default: 0.0
+        Units: offset
 
-      normalize_output (bool):
-          Normalize gradient magnitude.
-          Default: True
+    sobel_border : int
+        Default: cv.BORDER_DEFAULT
 
-      colormap (int):
-          Heatmap style.
-          Default: cv.COLORMAP_JET
+    normalize_output : bool
+        Description: Normalize gradient magnitude before colormap
+        Default: True
 
-    Returns:
-       heatmap (Image | None)
-       metadata (dict)
+    RETURNS
+    -------
+    grad_heatmap : ndarray | None
+        3-channel BGR gradient heatmap (H×W×3), uint8
+
+    metadata : dict
     """
-    meta: Dict[str, Any] = {"method": "gradient_map", "error": None}
+    meta = {"method": "gradient_map", "error": None}
 
     try:
-        if gray_image is None:
-            raise InvalidParameterErrorHM("gray_image is None")
-        if gray_image.ndim != 2:
-            raise InvalidParameterErrorHM("gray_image must be single-channel")
+        img = _ensure_grayscale(gray_image)
 
+        # Validate parameters
+        ksize = int(ksize)
         if ksize not in (1, 3, 5, 7):
-            raise InvalidParameterErrorHM("ksize must be 1,3,5,7")
+            raise InvalidParameterErrorHM("ksize must be 1, 3, 5, 7")
 
-        grad_x = cv.Sobel(gray_image, ddepth, dx, 0, ksize, sobel_scale, sobel_delta, sobel_border)
-        grad_y = cv.Sobel(gray_image, ddepth, 0, dy, ksize, sobel_scale, sobel_delta, sobel_border)
+        dx = int(dx)
+        dy = int(dy)
+        ddepth = int(ddepth)
+
+        # Sobel conversion for stability
+        src = img.astype(np.float32)
+
+        grad_x = cv.Sobel(
+            src=src, ddepth=ddepth,
+            dx=dx, dy=0,
+            ksize=ksize,
+            scale=float(sobel_scale),
+            delta=float(sobel_delta),
+            borderType=sobel_border
+        )
+
+        grad_y = cv.Sobel(
+            src=src, ddepth=ddepth,
+            dx=0, dy=dy,
+            ksize=ksize,
+            scale=float(sobel_scale),
+            delta=float(sobel_delta),
+            borderType=sobel_border
+        )
 
         magnitude = cv.magnitude(grad_x, grad_y)
 
@@ -192,47 +276,74 @@ def gradient_map(
         else:
             mag_u8 = _to_uint8(magnitude)
 
-        heatmap = cv.applyColorMap(mag_u8, colormap)
+        grad_heat = cv.applyColorMap(mag_u8, colormap)
 
         meta.update({
-            "dx": dx, "dy": dy,
+            "dx": dx,
+            "dy": dy,
             "ksize": ksize,
-            "ddepth": ddepth,
-            "scale": sobel_scale,
-            "delta": sobel_delta,
-            "border": sobel_border,
+            "shape": grad_heat.shape,
+            "dtype": grad_heat.dtype.name,
             "normalized": normalize_output,
-            "shape": heatmap.shape,
-            "dtype": heatmap.dtype.name,
+            "colormap": colormap,
         })
 
-        return heatmap, meta
+        return grad_heat, meta
 
     except HeatMapError as he:
         meta["error"] = str(he)
         return None, meta
 
     except Exception as ex:
-        meta["error"] = f"runtime: {ex}"
+        meta["error"] = f"Runtime error: {ex}"
         return None, meta
 
 
+
 # ============================================================
-# DEMO (outside module)
+# DEMO (executable)
 # ============================================================
 if __name__ == "__main__":
-    img = cv.imread("/home/user1/learning/Testing/StructureModule/Inputs/Input.jpg", cv.IMREAD_GRAYSCALE)
+    import cv2 as cv
+    import os
 
-    heat, meta1 = heat_map(img)
-    grad, meta2 = gradient_map(img)
+    # -------- SIMPLE FIXED INPUT PATH --------
+    sample_path = "StructureModule/Inputs/Input.jpg"
 
-    print(meta1)
-    print(meta2)
+    # -------- LOAD IMAGE --------
+    if not os.path.exists(sample_path):
+        print("Image not found:", sample_path)
+    else:
+        img = cv.imread(sample_path, cv.IMREAD_GRAYSCALE)
+        print("Loaded image:", img is not None)
+        if img is None:
+            print("Failed to read image as grayscale")
+        else:
+            # -------- COMPUTE MAPS --------
+            heat, meta1 = heat_map(img)
+            grad, meta2 = gradient_map(img)
 
-    if heat is not None:
-        cv.imshow("Heat Map", heat)
-    if grad is not None:
-        cv.imshow("Gradient Heat Map", grad)
+            print("\nHeat Map Metadata:", meta1)
+            print("Gradient Map Metadata:", meta2)
 
-    cv.waitKey(0)
-    cv.destroyAllWindows()
+            # -------- DISPLAY OUTPUT --------
+            if heat is not None:
+                cv.imshow("Heat Map", heat)
+            else:
+                print("Heat map generation failed:", meta1["error"])
+
+            if grad is not None:
+                cv.imshow("Gradient Map", grad)
+            else:
+                print("Gradient map generation failed:", meta2["error"])
+
+
+            print("Input shape:", img.shape)
+            if heat is not None:
+                print("Heat shape:", heat.shape)
+            if grad is not None:
+                print("Grad shape:", grad.shape)
+
+
+            cv.waitKey(0)
+            cv.destroyAllWindows()
