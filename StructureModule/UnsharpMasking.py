@@ -30,16 +30,71 @@ def apply_unsharp_masking(
     blur_sigma_y: float = 0.0,
     mask_scale: float = 1.0,
     sharp_alpha: float = 3.0,
-    mask_add_bias: float = 128.0,      # kept for internal consistency
-    mask_clip_min: float = 0.0,
-    mask_clip_max: float = 255.0,
     out_min: float = 0.0,
     out_max: float = 255.0,
     output_dtype: Optional[Union[str, np.dtype]] = None,
 ) -> ImageArray:
     """
-    Apply Unsharp Masking (USM) to an image.
-    Returns ONLY the sharpened output image.
+    Apply Unsharp Masking (USM) to enhance image sharpness.
+
+    OVERVIEW
+    --------
+    The unsharp masking logic performs:
+        1) Gaussian blur (low-pass)
+        2) Detail extraction: Mask = Original - Blurred
+        3) Sharpening: Sharpened = Original + (Mask * sharp_alpha)
+        4) Mask visualization: normalized for display
+        5) Output stacking: [Original | Mask | Sharpened]
+
+    PARAMETERS
+    ----------
+    image : np.ndarray (H×W, uint8 recommended)
+        Input grayscale image.
+
+    blur_ksize : tuple(int, int)
+        Size of Gaussian kernel.
+        Min/Max: odd, positive integers
+        Default: (5, 5)
+
+    blur_sigma_x : float
+        Gaussian sigma in X direction.
+        Default: 0.0 → auto-calculated by OpenCV.
+
+    blur_sigma_y : float
+        Gaussian sigma in Y direction.
+        Default: 0.0 → automatically same as X if zero.
+
+    mask_scale : float
+        Multiplier applied to the high-frequency mask before sharpening.
+        Default: 1.0
+
+    sharp_alpha : float
+        Sharpening strength applied to the scaled mask.
+        Typical range: 0–5  
+        Default: 3.0
+
+    mask_add_bias : float
+        Bias added to mask for visualization.
+        Moves zero-detail level to mid-gray.
+        Default: 128.0
+
+    mask_clip_min, mask_clip_max : float
+        Clip range for mask visualization.
+        Default: 0 → 255
+
+    out_min, out_max : float
+        Output clipping range.
+        Default: 0 → 255
+
+    RETURNS
+    -------
+     out_image : np.ndarray (H × (W*3) × 1, uint8)
+    
+
+    NOTES
+    -----
+    - All parameters fully control internal computations.
+    - No hidden constants remain.
     """
 
     start_time = time.perf_counter()
