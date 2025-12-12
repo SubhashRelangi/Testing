@@ -184,16 +184,16 @@ def apply_scharr_operator(
         thresh_max_cast = float(threshold_max_value)
 
     # 6) Threshold using externally provided params
-    _, edge_map = cv.threshold(magnitude_for_thresh, threshold_val, thresh_max_cast, threshold_type)
+    _, out_image = cv.threshold(magnitude_for_thresh, threshold_val, thresh_max_cast, threshold_type)
 
     # 7) If edge_map dtype is > uint8 but user likely wants uint8, optionally downcast if max <=255
-    if edge_map.dtype != np.uint8 and threshold_max_value <= 255.0:
-        edge_map = edge_map.astype(np.uint8)
+    if out_image.dtype != np.uint8 and threshold_max_value <= 255.0:
+        out_image = out_image.astype(np.uint8)
 
     end_time = time.time()
     print(f"[apply_scharr_operator] Start: {start_time:.6f}  End: {end_time:.6f}  Duration: {end_time - start_time:.6f} sec")
 
-    return edge_map
+    return out_image
 
 
 if __name__ == "__main__":

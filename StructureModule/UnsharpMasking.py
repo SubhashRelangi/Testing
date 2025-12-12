@@ -172,18 +172,18 @@ def apply_unsharp_masking(
         out_dtype = np.dtype(output_dtype)
 
     if out_dtype == np.uint8:
-        output = sharpened_clipped.astype(np.uint8)
+        out_image = sharpened_clipped.astype(np.uint8)
 
     elif out_dtype == np.uint16:
-        output = (sharpened_clipped.astype(np.uint16) * 257)
+        out_image = (sharpened_clipped.astype(np.uint16) * 257)
 
     else:
-        output = sharpened_clipped.astype(out_dtype)
+        out_image = sharpened_clipped.astype(out_dtype)
 
     end_time = time.perf_counter()
     print(f"{'apply_unsharp_masking execution time:':<36}{end_time - start_time:.4f} seconds")
 
-    return output
+    return out_image
 
 
 if __name__ == "__main__":

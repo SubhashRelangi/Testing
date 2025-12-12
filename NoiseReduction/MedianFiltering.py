@@ -36,9 +36,9 @@ def thermal_median_blur(src: np.ndarray, ksize: int) -> np.ndarray:
         raise ValueError("ksize must be a positive ODD number (>1)")
 
     # ------ Apply median blur ------
-    outimg = cv2.medianBlur(src, ksize)
+    out_image = cv2.medianBlur(src, ksize)
 
-    return outimg
+    return out_image
 
 
 if __name__ == "__main__":

@@ -254,9 +254,9 @@ def total_temporal_average(
 
         # Convert requested output dtype
         if output_dtype == "uint8":
-            avg_out = np.clip(avg_norm, 0, 255).astype(np.uint8)
+            avg_out_image = np.clip(avg_norm, 0, 255).astype(np.uint8)
         else:
-            avg_out = avg_norm.astype(np.float32)
+            avg_out_image = avg_norm.astype(np.float32)
 
         if show:
             cv.destroyAllWindows()
@@ -267,7 +267,7 @@ def total_temporal_average(
 
         print(f"[total_temporal_average] Time Taken: {total_time:.6f} seconds")
 
-        return avg_out
+        return avg_out_image
 
     except Exception:
         try:
@@ -495,9 +495,9 @@ def recursive_temporal_average(
             avg_norm = avg_float32
 
         if output_dtype == "uint8":
-            avg_out = np.clip(avg_norm, 0, 255).astype(np.uint8)
+            rec_out_image = np.clip(avg_norm, 0, 255).astype(np.uint8)
         else:
-            avg_out = avg_norm.astype(np.float32)
+            rec_out_image = avg_norm.astype(np.float32)
 
         if show:
             cv.destroyAllWindows()
@@ -507,7 +507,7 @@ def recursive_temporal_average(
         total_time = end_time - start_time
 
         print(f"[recursive_temporal_average] Time Taken: {total_time:.6f} seconds")
-        return avg_out
+        return rec_out_image
     
 
 

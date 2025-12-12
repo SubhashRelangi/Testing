@@ -84,7 +84,7 @@ def thermal_nlm_denoise(
         raise ValueError(f"Unsupported image dtype: {original_dtype}")
 
     # --- Apply OpenCV Non-Local Means (single-channel) ---
-    denoised8 = cv2.fastNlMeansDenoising(
+    out_image = cv2.fastNlMeansDenoising(
         img_norm,
         None,
         h=float(h),
@@ -98,7 +98,7 @@ def thermal_nlm_denoise(
     print(f"{'gaussian_filter execution time:':<36}{end_time - start_time:.4f} seconds")
 
     # always return 8-bit denoised image
-    return denoised8
+    return out_image
     
 
 

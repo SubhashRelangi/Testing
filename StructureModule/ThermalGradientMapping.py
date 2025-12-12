@@ -215,12 +215,12 @@ def gradient_map(
         else:
             mag_u8 = _to_uint8(magnitude)
 
-        grad_heat = cv.applyColorMap(mag_u8, colormap)
+        out_image = cv.applyColorMap(mag_u8, colormap)
 
         end_time = time.time()
         print(f"[gradient_map] Duration: {end_time - start_time:.6f} sec")
 
-        return grad_heat
+        return out_image
 
     except Exception as ex:
         print(f"[gradient_map] ERROR: {ex}")
