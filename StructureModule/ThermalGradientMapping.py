@@ -17,7 +17,9 @@ This module:
 import cv2 as cv
 import numpy as np
 import time
-from typing import Optional
+from typing import Optional, Union
+
+ImageArray = np.ndarray
 
 
 # ---------------------------------
@@ -60,7 +62,7 @@ def _ensure_grayscale(img: np.ndarray) -> np.ndarray:
 # GRADIENT MAP — RETURNS ONLY THE IMAGE
 # ============================================================
 def gradient_map(
-    gray_image: np.ndarray,
+    gray_image: Union[str, ImageArray],
     *,
     dx: int = 1,
     dy: int = 1,
@@ -74,8 +76,9 @@ def gradient_map(
     norm_beta: float = 255,
     norm_type: int = cv.NORM_MINMAX,
     colormap: int = cv.COLORMAP_JET,
-) -> Optional[np.ndarray]:
+) -> Optional[ImageArray]:
     
+
     """
     Compute Sobel gradient magnitude → normalize → colorize (3-channel).
 
@@ -125,16 +128,59 @@ def gradient_map(
     -------
     grad_heatmap : ndarray | None
         3-channel BGR gradient heatmap (H×W×3), uint8
-
-    metadata : dict
     """
 
     start_time = time.time()
 
     try:
-        img = _ensure_grayscale(gray_image)
+        # ------------------------------------
+        # Load / convert input  (REFERENCE CODE STYLE)
+        # ------------------------------------
+        if gray_image is None:
+            raise InvalidParameterErrorHM("Input image is None.")
 
-        # Parameter validation
+        if isinstance(gray_image, str):
+            img = cv.imread(gray_image, cv.IMREAD_GRAYSCALE)
+            if img is None:
+                raise FileNotFoundError(f"Could not read image at path: {gray_image}")
+        else:
+            img = np.asarray(gray_image)
+
+        if img.size == 0:
+            raise InvalidParameterErrorHM("Input image is empty.")
+
+        # Extract first channel if multi-channel
+        if img.ndim > 2:
+            img = img[..., 0]
+
+        if img.ndim != 2:
+            raise InvalidParameterErrorHM(f"Expected 2D grayscale image, got {img.shape}")
+
+        orig_dtype = img.dtype
+
+        # ------------------------------------
+        # Convert to float32 (REFERENCE LOGIC)
+        # ------------------------------------
+        if np.issubdtype(orig_dtype, np.floating):
+            # assume range [0,1] or arbitrary → clip to [0,1] → scale to [0,255]
+            img_f = np.clip(img, 0.0, 1.0).astype(np.float32) * 255.0
+
+        elif orig_dtype == np.uint8:
+            img_f = img.astype(np.float32)
+
+        elif orig_dtype == np.uint16:
+            img_f = (img.astype(np.float32) / 65535.0) * 255.0
+
+        else:
+            raise InvalidParameterErrorHM(
+                f"Unsupported dtype {orig_dtype}. Allowed: uint8, uint16, float32, float64."
+            )
+
+        # ------------------------------------
+        # Original gradient_map LOGIC (UNCHANGED)
+        # ------------------------------------
+
+        # parameter enforcement
         ksize = int(ksize)
         if ksize not in (1, 3, 5, 7):
             raise InvalidParameterErrorHM("ksize must be 1, 3, 5, 7")
@@ -143,19 +189,18 @@ def gradient_map(
         dy = int(dy)
         ddepth = int(ddepth)
 
-        src = img.astype(np.float32)
-
-        # Sobel
+        # Sobel X
         grad_x = cv.Sobel(
-            src, ddepth, dx, 0,
+            img_f, ddepth, dx, 0,
             ksize=ksize,
             scale=float(sobel_scale),
             delta=float(sobel_delta),
             borderType=sobel_border
         )
 
+        # Sobel Y
         grad_y = cv.Sobel(
-            src, ddepth, 0, dy,
+            img_f, ddepth, 0, dy,
             ksize=ksize,
             scale=float(sobel_scale),
             delta=float(sobel_delta),
@@ -172,9 +217,8 @@ def gradient_map(
 
         grad_heat = cv.applyColorMap(mag_u8, colormap)
 
-
         end_time = time.time()
-        print(f"[gradient_map] Start: {start_time:.6f}  End: {end_time:.6f}  Duration: {end_time - start_time:.6f} sec")
+        print(f"[gradient_map] Duration: {end_time - start_time:.6f} sec")
 
         return grad_heat
 
@@ -188,7 +232,6 @@ def gradient_map(
 # ============================================================
 if __name__ == "__main__":
     import os
-    import cv2 as cv
 
     sample_path = "StructureModule/Inputs/Input.jpg"
 
