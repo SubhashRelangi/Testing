@@ -1,21 +1,22 @@
 """
 temporal_averages.py
 
-Contains two functions with identical parameter lists:
+Two functions:
  - total_temporal_average(...)
  - recursive_temporal_average(...)
 
-Both return: (np.ndarray | None, metadata_dict)
+Each returns:
+  - np.ndarray : final averaged frame (uint8 or float32) on success
 
-Exceptions:
- - VideoOpenError
- - InvalidParameterError
+Raises:
+  - VideoOpenError, InvalidParameterError, TemporalAverageError, or other exceptions.
 """
 
-from typing import Optional, Tuple, Dict, Any
+from typing import Tuple, Optional
 import os
 import cv2 as cv
 import numpy as np
+import time
 
 
 # ---------------------------
@@ -56,7 +57,7 @@ def total_temporal_average(
     is_thermal: bool = False,
     preserve_radiometric: bool = False,
     max_frames: Optional[int] = None,
-    roi: Optional[Tuple[int,int,int,int]] = None,
+    roi: Optional[Tuple[int, int, int, int]] = None,
     output_dtype: str = "uint8",
     units: str = "raw",
     apply_normalization: bool = True,
@@ -67,7 +68,7 @@ def total_temporal_average(
     verbose: bool = False,
     alpha: float = 0.02,              # parity only
     running_average_mode: bool = True
-) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+) -> np.ndarray:
     """
     Full-sequence temporal averaging (incremental mean).
 
@@ -166,6 +167,8 @@ def total_temporal_average(
 
     """
 
+    start_time = time.perf_counter()
+
     # ---- Validate paths & params ----
     if not os.path.exists(video_path):
         raise VideoOpenError(f"Video file not found: {video_path}")
@@ -179,31 +182,11 @@ def total_temporal_average(
     if max_frames is not None and max_frames < 1:
         raise InvalidParameterError("max_frames must be >= 1 or None.")
 
-    meta: Dict[str, Any] = {
-        "method": "total",
-        "frames_processed": 0,
-        "frame_width": None,
-        "frame_height": None,
-        "input_dtype": None,
-        "input_min": None,
-        "input_max": None,
-        "units": units,
-        "preserve_radiometric": preserve_radiometric,
-        "output_dtype": output_dtype,
-        "error": None,
-        "running_average_mode": running_average_mode,
-    }
-
     cap = cv.VideoCapture(video_path)
     if not cap.isOpened():
         raise VideoOpenError("Unable to open video.")
 
     try:
-        W = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
-        H = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-        meta["frame_width"] = W
-        meta["frame_height"] = H
-
         accumulator: Optional[np.ndarray] = None  # dtype float64 accumulator
         global_min = np.inf
         global_max = -np.inf
@@ -220,7 +203,6 @@ def total_temporal_average(
                 frame = frame[y:y + h, x:x + w]
 
             cur = _safe_convert_to_single_channel(frame)  # float32
-            meta["input_dtype"] = str(frame.dtype)
 
             fmin, fmax = float(cur.min()), float(cur.max())
             global_min = min(global_min, fmin)
@@ -249,19 +231,12 @@ def total_temporal_average(
                 cv.imshow("Total - Current (gray)", cv.convertScaleAbs(cur))
                 cv.imshow("Total - Accumulator", disp)
                 if cv.waitKey(1) & 0xFF == ord('q'):
-                    if verbose:
-                        print("User requested quit (q).")
                     break
 
         cap.release()
 
         if frames == 0 or accumulator is None:
-            meta["error"] = "No frames processed."
-            return None, meta
-
-        meta["frames_processed"] = frames
-        meta["input_min"] = global_min
-        meta["input_max"] = global_max
+            raise TemporalAverageError("No frames processed.")
 
         avg_float32 = accumulator.astype(np.float32)
 
@@ -269,7 +244,7 @@ def total_temporal_average(
         if preserve_radiometric:
             if show:
                 cv.destroyAllWindows()
-            return avg_float32, meta
+            return avg_float32
 
         # Normalize for display / output if requested
         if apply_normalization:
@@ -286,17 +261,20 @@ def total_temporal_average(
         if show:
             cv.destroyAllWindows()
 
-        return avg_out, meta
 
-    except Exception as e:
-        meta["error"] = str(e)
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+
+        print(f"[Wavelet Denoise] Time Taken: {total_time:.6f} seconds")
+
+        return avg_out
+
+    except Exception:
         try:
             cap.release()
         except Exception:
             pass
-        if verbose:
-            print(f"total_temporal_average error: {e}")
-        return None, meta
+        raise
 
 
 # ---------------------------
@@ -319,7 +297,8 @@ def recursive_temporal_average(
     verbose: bool = False,
     alpha: float = 0.02,  # used by recursive averaging
     running_average_mode: bool = True,  # present for signature parity but ignored here
-) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+) -> np.ndarray:
+    
     """
     Recursive exponential-moving-average over frames:
         O_new = (1 - alpha) * O_old + alpha * I_k
@@ -419,6 +398,8 @@ def recursive_temporal_average(
           All processing statistics and error flags.
     """
 
+    start_time = time.perf_counter()
+
     # ---- Validate paths & params ----
     if not os.path.exists(video_path):
         raise VideoOpenError(f"Video file not found: {video_path}")
@@ -435,21 +416,6 @@ def recursive_temporal_average(
     if max_frames is not None and max_frames < 1:
         raise InvalidParameterError("max_frames must be >= 1 or None.")
 
-    meta: Dict[str, Any] = {
-        "method": "recursive",
-        "frames_processed": 0,
-        "frame_width": None,
-        "frame_height": None,
-        "input_dtype": None,
-        "input_min": None,
-        "input_max": None,
-        "units": units,
-        "preserve_radiometric": preserve_radiometric,
-        "output_dtype": output_dtype,
-        "error": None,
-        "alpha": alpha,
-    }
-
     cap = cv.VideoCapture(video_path)
     if not cap.isOpened():
         raise VideoOpenError("Unable to open video.")
@@ -459,8 +425,7 @@ def recursive_temporal_average(
         ret, frame_1 = cap.read()
         if not ret:
             cap.release()
-            meta["error"] = "Video is empty."
-            return None, meta
+            raise VideoOpenError("Video is empty.")
 
         if roi is not None:
             x, y, w, h = roi
@@ -468,13 +433,9 @@ def recursive_temporal_average(
 
         I1 = _safe_convert_to_single_channel(frame_1)
         accumulator = I1.astype(np.float64)  # high-precision accumulator
-        meta["input_dtype"] = str(frame_1.dtype)
         global_min = float(I1.min())
         global_max = float(I1.max())
         frames = 1
-
-        if verbose:
-            print("Accumulator initialized with the first frame (recursive).")
 
         weight_old = 1.0 - alpha
         weight_new = alpha
@@ -492,11 +453,9 @@ def recursive_temporal_average(
 
             # shape check
             if cur.shape != accumulator.shape:
-                if verbose:
-                    print("Warning: frame shape mismatch; stopping.")
                 break
 
-            # update accumulator using addWeighted (same approach as you had)
+            # update accumulator using addWeighted
             accumulator = cv.addWeighted(
                 accumulator, weight_old,
                 cur.astype(np.float64), weight_new,
@@ -519,25 +478,16 @@ def recursive_temporal_average(
                 cv.imshow("Recursive - Current (gray)", cv.convertScaleAbs(cur))
                 cv.imshow("Recursive - Accumulator", disp)
                 if cv.waitKey(1) & 0xFF == ord('q'):
-                    if verbose:
-                        print("User requested quit (q).")
                     break
 
         cap.release()
 
-        meta["frames_processed"] = frames
-        meta["frame_width"] = int(accumulator.shape[1])
-        meta["frame_height"] = int(accumulator.shape[0])
-        meta["input_min"] = global_min
-        meta["input_max"] = global_max
-
-        if show:
-            cv.destroyAllWindows()
-
         avg_float32 = accumulator.astype(np.float32)
 
         if preserve_radiometric:
-            return avg_float32, meta
+            if show:
+                cv.destroyAllWindows()
+            return avg_float32
 
         if apply_normalization:
             avg_norm = cv.normalize(avg_float32, None, norm_alpha, norm_beta, norm_type)
@@ -549,27 +499,32 @@ def recursive_temporal_average(
         else:
             avg_out = avg_norm.astype(np.float32)
 
-        return avg_out, meta
+        if show:
+            cv.destroyAllWindows()
 
-    except Exception as e:
-        meta["error"] = str(e)
+
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+
+        print(f"[Wavelet Denoise] Time Taken: {total_time:.6f} seconds")
+        return avg_out
+    
+
+
+    except Exception:
         try:
             cap.release()
         except Exception:
             pass
-        if verbose:
-            print(f"recursive_temporal_average error: {e}")
-        return None, meta
+        raise
+    
 
 
-# ---------------------------
-# Example usage (when run as script)
-# ---------------------------
 if __name__ == "__main__":
     VIDEO = "/home/user1/learning/Testing/Videos/video.mp4"
 
     # Example 1: total mean (same signature)
-    avg_total, meta_total = total_temporal_average(
+    avg_total = total_temporal_average(
         VIDEO,
         is_thermal=False,
         preserve_radiometric=False,
@@ -586,10 +541,9 @@ if __name__ == "__main__":
         alpha=0.02,               # present but ignored by total
         running_average_mode=True,  # incremental mean
     )
-    print("TOTAL meta:", meta_total)
 
     # Example 2: recursive average (same signature)
-    avg_rec, meta_rec = recursive_temporal_average(
+    avg_rec = recursive_temporal_average(
         VIDEO,
         is_thermal=False,
         preserve_radiometric=False,
@@ -606,7 +560,6 @@ if __name__ == "__main__":
         alpha=0.02,               # used by recursive
         running_average_mode=True,  # ignored by recursive
     )
-    print("RECURSIVE meta:", meta_rec)
 
     # display results if available
     if avg_total is not None:

@@ -1,28 +1,53 @@
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple
 import cv2 as cv
+import time
 import numpy as np
-import sys
-import os
 
-# Type hint alias for image arrays
 Image = np.ndarray
 
-# --- Placeholder utility functions (Error class, type converter) ---
-
-class FilterError(Exception):
-    """Custom exception for filtering errors."""
-    pass
 
 def _to_uint8(img: np.ndarray) -> np.ndarray:
-    """Clips and converts an image array to uint8."""
-    # Assuming standard 0-255 scaling for visualization if input is float
+    """Convert float/large arrays into uint8 safely."""
     if img.dtype.kind in np.typecodes['AllFloat']:
         img = np.clip(img, 0, 255)
     return img.astype(np.uint8)
 
-# =====================================================
-# 2. CORE PROCESSING FUNCTIONS (MAXIMUM SIGNATURE DETAIL)
-# =====================================================
+
+def _ensure_grayscale(image: Image) -> Optional[Image]:
+    """
+    Validate input and ensure single-channel grayscale output.
+
+    - If input is None -> returns None
+    - If input is 2D -> assumed grayscale, returned as-is
+    - If input is 3D (BGR/RGB) -> converted to grayscale via cvtColor and returned
+    - Otherwise -> returns None
+
+    This is a small helper so every processing function first normalizes the image shape.
+    """
+    if image is None:
+        return None
+
+    # numpy arrays: check dims
+    if not isinstance(image, np.ndarray):
+        return None
+
+    if image.ndim == 2:
+        return image
+    if image.ndim == 3:
+        # assume color in BGR (OpenCV default); convert to grayscale
+        try:
+            gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+            return gray
+        except Exception:
+            # try converting from RGB if BGR conversion fails
+            try:
+                gray = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+                return gray
+            except Exception:
+                return None
+    # unsupported dimension
+    return None
+
 
 def subtract_low_pass(
     image: Image,
@@ -32,7 +57,7 @@ def subtract_low_pass(
     offset: float = 127.0,
     min_clip: int = 0,
     max_clip: int = 255
-) -> Tuple[Optional[Image], Dict[str, Any]]:
+) -> Optional[Image]:
     """
     Applies a high-pass filter by subtracting a Gaussian blurred image (low-pass) 
     from the original. 
@@ -71,37 +96,36 @@ def subtract_low_pass(
     -------
     result : ndarray | None
         The high-pass filtered image (uint8).
+"""
+    start_time = time.perf_counter()
 
-    metadata : dict
-        Contains method, shape, dtype, and error message.
-    """
-    meta = {"method": "subtract_low_pass", "error": None}
-    if image is None:
-        meta["error"] = "Input image is None."
-        return None, meta
-        
+    # validation & grayscale ensure
+    img = _ensure_grayscale(image)
+    if img is None:
+        return None
+
     try:
-        image_float = image.astype(np.float32)
-        
-        blurred_img = cv.GaussianBlur(image_float, gblur_ksize, sigma)
-        high_pass_img = image_float - blurred_img + offset
-        
-        # Clamping based on parameters
-        high_pass_result = np.clip(high_pass_img, min_clip, max_clip).astype(np.uint8)
-        
-        meta.update({"shape": high_pass_result.shape, "dtype": high_pass_result.dtype.name})
-        return high_pass_result, meta
-    except Exception as exc:
-        meta["error"] = f"Runtime error: {exc}"
-        return None, meta
+        img_f = img.astype(np.float32)
+        blurred = cv.GaussianBlur(img_f, gblur_ksize, sigma)
+        high_pass = img_f - blurred + offset
+        out_image = np.clip(high_pass, min_clip, max_clip).astype(np.uint8)
+        return out_image
+
+    except Exception:
+        return None
+
+    finally:
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        print(f"[subtract_low_pass] Time Taken: {total_time:.6f} seconds")
 
 
 def convolve_with_kernel(
     image: Image,
     *,
-    kernel: np.ndarray,
+    kernel: np.ndarray = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32),
     ddepth: int = -1
-) -> Tuple[Optional[Image], Dict[str, Any]]:
+) -> Optional[Image]:
     """
     Applies 2D convolution using a predefined kernel (e.g., sharpening).
     
@@ -126,23 +150,27 @@ def convolve_with_kernel(
     -------
     result : ndarray | None
         The convolved image (uint8).
-
-    metadata : dict
-        Contains method, shape, dtype, and error message.
     """
-    meta = {"method": "convolve_with_kernel", "error": None}
-    if image is None:
-        meta["error"] = "Input image is None."
-        return None, meta
-        
+    start_time = time.perf_counter()
+
+    img = _ensure_grayscale(image)
+    if img is None:
+        return None
+
     try:
-        filtered_image = cv.filter2D(image, ddepth=ddepth, kernel=kernel)
-        
-        meta.update({"shape": filtered_image.shape, "dtype": filtered_image.dtype.name})
-        return filtered_image, meta
-    except Exception as exc:
-        meta["error"] = f"Runtime error: {exc}"
-        return None, meta
+        # filter2D preserves shape; ddepth=-1 keeps dtype
+        filtered = cv.filter2D(img, ddepth=ddepth, kernel=kernel)
+        # normalize/clip to uint8 for safe downstream use
+        out_image = _to_uint8(filtered)
+        return out_image
+
+    except Exception:
+        return None
+
+    finally:
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        print(f"[convolve_with_kernel] Time Taken: {total_time:.6f} seconds")
 
 
 def apply_laplacian_detector(
@@ -150,7 +178,7 @@ def apply_laplacian_detector(
     *,
     ksize: int = 3,
     ddepth: int = cv.CV_64F
-) -> Tuple[Optional[Image], Dict[str, Any]]:
+) -> Optional[Image]:
     """
     Applies the Laplacian edge detection operator (second-order derivative).
     
@@ -175,30 +203,26 @@ def apply_laplacian_detector(
     -------
     result : ndarray | None
         The Laplacian edge map (uint8).
-
-    metadata : dict
-        Contains method, shape, dtype, and error message.
     """
-    meta = {"method": "apply_laplacian_detector", "error": None}
-    if image is None:
-        meta["error"] = "Input image is None."
-        return None, meta
+    start_time = time.perf_counter()
+
+    img = _ensure_grayscale(image)
+    if img is None:
+        return None
 
     try:
-        # Laplacian Operator (Second-order derivative)
-        lap = cv.Laplacian(image, ddepth=ddepth, ksize=ksize)
-        
-        # Take absolute value and convert back to 8-bit for visualization
-        laplacian_8bit = _to_uint8(np.absolute(lap))
-        
-        meta.update({"shape": laplacian_8bit.shape, "dtype": laplacian_8bit.dtype.name})
-        return laplacian_8bit, meta
-    except Exception as exc:
-        meta["error"] = f"Runtime error: {exc}"
-        return None, meta
+        lap = cv.Laplacian(img, ddepth=ddepth, ksize=ksize)
+        out_image = _to_uint8(np.abs(lap))
+        return out_image
 
+    except Exception:
+        return None
 
-# ... (rest of the file content before the function definitions) ...
+    finally:
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        print(f"[apply_laplacian_detector] Time Taken: {total_time:.6f} seconds")
+
 
 def apply_sobel_xy_detectors(
     image: Image,
@@ -208,175 +232,158 @@ def apply_sobel_xy_detectors(
     dx_sobel_x: int = 1,
     dy_sobel_x: int = 0,
     dx_sobel_y: int = 0,
-    dy_sobel_y: int = 1
-) -> Tuple[Optional[Image], Optional[Image], Optional[Image], Dict[str, Any]]:
+    dy_sobel_y: int = 1,
+    # ---- NEW NORMALIZATION PARAMETERS ----
+    norm_min: int = 0,
+    norm_max: int = 255,
+    norm_type: int = cv.NORM_MINMAX,
+    norm_dtype: int = cv.CV_8U
+) -> Optional[Image]:
     """
-    Applies Sobel operators for X and Y gradient magnitude calculation.
-    (Includes explicit normalization for visualization).
-    
+    Applies Sobel X and Y, computes gradient magnitude, normalizes by user-specified
+    parameters, and returns a uint8 magnitude image. Returns None on failure.
 
-    ... (PARAMETERS and RETURNS documentation remains the same) ...
+    -------------------------------------------------------------------------
+    PARAMETER SPECIFICATIONS 
+    -------------------------------------------------------------------------
+
+    image : np.ndarray  
+        Description: Input thermal or grayscale image.  
+        Min & Max: ≥ 1×1 pixels.  
+        Units: Pixel intensity.  
+        Default: Required.  
+        Best case: Clean uint8 thermal frame.
+
+    ksize : int  
+        Description: Sobel aperture size (odd).  
+        Min & Max: 1 → 31 (odd only).  
+        Units: Pixels.  
+        Default: 3.  
+        Best case: 3 for thermal edge enhancement.
+
+    ddepth : int  
+        Description: Depth of Sobel output.  
+        Min & Max: OpenCV depth enums.  
+        Units: cv.CV_*  
+        Default: cv.CV_64F  
+        Best case: CV_64F for high precision.
+
+    dx_sobel_x / dy_sobel_x : int  
+        Description: Derivative orders for Sobel-X.  
+        Min & Max: 0–2.  
+        Units: Order.  
+        Default: 1, 0.  
+        Best case: (1,0) for pure X-gradient.
+
+    dx_sobel_y / dy_sobel_y : int  
+        Description: Derivative orders for Sobel-Y.  
+        Min & Max: 0–2.  
+        Units: Order.  
+        Default: (0,1).  
+        Best case: (0,1) for pure Y-gradient.
+
+    ---------------- NORMALIZATION PARAMETERS ----------------
+
+    norm_min : int  
+        Description: Minimum output intensity after normalization.  
+        Min & Max: 0 → 255  
+        Units: Pixel intensity.  
+        Default: 0  
+        Best case: 0 (typical for uint8 visualization).
+
+    norm_max : int  
+        Description: Maximum output intensity after normalization.  
+        Min & Max: 1 → 255  
+        Units: Pixel intensity.  
+        Default: 255  
+        Best case: 255 for full contrast.
+
+    norm_type : int  
+        Description: OpenCV normalization type.  
+        Min & Max: Valid cv normalization modes.  
+        Units: cv.NORM_*  
+        Default: cv.NORM_MINMAX  
+        Best case: cv.NORM_MINMAX for edge maps.
+
+    norm_dtype : int  
+        Description: Output datatype of normalized image.  
+        Min & Max: OpenCV depth enums  
+        Units: cv.CV_*  
+        Default: cv.CV_8U  
+        Best case: CV_8U for display and further processing.
+
+    -------------------------------------------------------------------------
+    NOTES:
+      - Gradient magnitude: sqrt(SobelX² + SobelY²)
+      - Fully customizable normalization
+      - Returns uint8 edge map unless user changes norm_dtype
+    -------------------------------------------------------------------------
+
+    RETURNS
+    -------
+    result : ndarray | None
+        The Sobel magnitude image.
     """
-    meta = {"method": "apply_sobel_xy_detectors", "error": None, "x_meta": {}, "y_meta": {}, "mag_meta": {}}
-    if image is None:
-        meta["error"] = "Input image is None."
-        return None, None, None, meta
+    start_time = time.perf_counter()
+
+    img = _ensure_grayscale(image)
+    if img is None:
+        return None
 
     try:
-        # 1. Sobel Operator (X-direction) - Intermediate float result
-        sobelx_float = cv.Sobel(image, ddepth=ddepth, dx=dx_sobel_x, dy=dy_sobel_x, ksize=ksize)
+        sobelx = cv.Sobel(img, ddepth=ddepth, dx=dx_sobel_x, dy=dy_sobel_x, ksize=ksize)
+        sobely = cv.Sobel(img, ddepth=ddepth, dx=dx_sobel_y, dy=dy_sobel_y, ksize=ksize)
 
-        # 2. Sobel Operator (Y-direction) - Intermediate float result
-        sobely_float = cv.Sobel(image, ddepth=ddepth, dx=dx_sobel_y, dy=dy_sobel_y, ksize=ksize)
+        magnitude = np.sqrt(sobelx**2 + sobely**2)
 
-        # --- A. Visualize X and Y separately (using np.absolute and simple clip/convert) ---
-        # Note: np.absolute() handles the negative values, _to_uint8() handles values > 255
-        sobelx_8bit = _to_uint8(np.absolute(sobelx_float))
-        sobely_8bit = _to_uint8(np.absolute(sobely_float))
-        
-        meta["x_meta"].update({"shape": sobelx_8bit.shape, "dtype": sobelx_8bit.dtype.name})
-        meta["y_meta"].update({"shape": sobely_8bit.shape, "dtype": sobely_8bit.dtype.name})
-
-        # --- B. Sobel Magnitude Calculation: G = sqrt(Gx^2 + Gy^2) ---
-        magnitude_float = np.sqrt(np.square(sobelx_float) + np.square(sobely_float))
-        
-        # --- CRITICAL FIX: Explicit Normalization for Visualization ---
-        # Normalize the high-range float magnitude data to fit the 0-255 visualization range.
         magnitude_norm = cv.normalize(
-            magnitude_float, 
-            None, 
-            0,            # alpha (min value for output)
-            255,          # beta (max value for output)
-            cv.NORM_MINMAX,
-            cv.CV_8U      # Explicitly specify 8-bit unsigned output
+            magnitude,
+            None,
+            alpha=norm_min,
+            beta=norm_max,
+            norm_type=norm_type,
+            dtype=norm_dtype
         )
-        
-        magnitude_8bit = magnitude_norm
-        meta["mag_meta"].update({"shape": magnitude_8bit.shape, "dtype": magnitude_8bit.dtype.name})
 
-        return sobelx_8bit, sobely_8bit, magnitude_8bit, meta
-    except Exception as exc:
-        meta["error"] = f"Runtime error: {exc}"
-        return None, None, None, meta
-    
+        return magnitude_norm
 
-# =====================================================
-# 3. EXECUTION AND I/O EXAMPLE (USING DEFAULTS)
-# =====================================================
+    except Exception:
+        return None
 
-def ensure_output_directory(output_dir: str):
-    """
-    Checks if the specified directory exists, and creates it if it does not.
-    """
-    if not os.path.exists(output_dir):
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-            print(f"Created output directory: {output_dir}")
-        except Exception as e:
-            print(f"FATAL I/O Error creating directory {output_dir}: {e}", file=sys.stderr)
-            sys.exit(1)
+    finally:
 
+       end_time = time.perf_counter() 
+       total_time = end_time - start_time 
+       print(f"[apply_sobel_xy_detectors] Time Taken: {total_time:.6f} seconds")
+ 
 
 if __name__ == "__main__":
-    # --- I/O Setup ---
-    # NOTE: Set SRC_PATH to a valid image file path for execution
-    SRC_PATH = "/home/user1/learning/Testing/NoiseReduction/Inputs/frame_000000.jpg" 
-    OUT_DIR = "/home/user1/learning/Testing/NoiseReduction/Outputs"
-    
-    ensure_output_directory(OUT_DIR)
-    
-    # 1. Load Image
-    try:
-        if not os.path.exists(SRC_PATH):
-            print(f"WARNING: Image file not found at '{SRC_PATH}'. Using dummy image.")
-            image = np.random.randint(0, 256, (100, 100), dtype=np.uint8)
-        else:
-            image = cv.imread(SRC_PATH, cv.IMREAD_GRAYSCALE)
-            if image is None:
-                raise IOError("OpenCV could not decode the image file.")
-            print(f"Image loaded successfully: {image.shape}")
 
-    except Exception as e:
-        print(f"Critical Error during file loading: {e}", file=sys.stderr)
-        sys.exit(1)
+    image = cv.imread("/home/user1/learning/Testing/NoiseReduction/Inputs/frame_000000.jpg")
 
+    if image is None:
+        print("Error: Image not loaded. Check file path.")
+        # Exit or handle error
 
-    # 2. Execute Filters and Save Results
-    
-    # --- 2.1. Subtracting Low Pass (Using all default parameters) ---
-    try:
-        result_subtraction, meta = subtract_low_pass(
-            image,
-            gblur_ksize=(5, 5), # Example of overriding a default parameter
-            sigma=2.5
-            # Remaining parameters (offset, min_clip, max_clip) use defaults
-        )
-        if result_subtraction is not None:
-            stacked_subtraction = np.hstack([image, result_subtraction])
-            cv.imwrite(os.path.join(OUT_DIR, "1_HighPass_Subtraction.png"), stacked_subtraction)
-            print(f"Processed and saved: HighPass Subtraction. Meta: {meta['shape']}, {meta['dtype']}")
-        else:
-            print(f"Error in HighPass Subtraction: {meta['error']}")
-    except Exception as e:
-        print(f"Execution Error in Subtraction: {e}", file=sys.stderr)
+    low_pass = subtract_low_pass(image=image)
 
+    fil = convolve_with_kernel(image=image)
 
-    # --- 2.2. Convolution with Kernel (Laplacian Sharpening) ---
-    try:
-        sharpening_kernel = np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]], dtype=np.float32)
-        result_convolution, meta = convolve_with_kernel(
-            image,
-            kernel=sharpening_kernel,
-            ddepth=-1
-        )
-        if result_convolution is not None:
-            stacked_convolution = np.hstack([image, result_convolution])
-            cv.imwrite(os.path.join(OUT_DIR, "2_Convolution_Sharpening.png"), stacked_convolution)
-            print(f"Processed and saved: Convolution Sharpening. Meta: {meta['shape']}, {meta['dtype']}")
-        else:
-            print(f"Error in Convolution Sharpening: {meta['error']}")
-    except Exception as e:
-        print(f"Execution Error in Convolution: {e}", file=sys.stderr)
+    apply_lap = apply_laplacian_detector(image=image)
 
+    apply_sob = apply_sobel_xy_detectors(image=image)
 
-    # --- 2.3. Laplacian Edge Detector ---
-    try:
-        result_laplacian, meta = apply_laplacian_detector(
-            image,
-            ksize=3,
-            ddepth=cv.CV_64F
-        )
-        if result_laplacian is not None:
-            cv.imwrite(os.path.join(OUT_DIR, "3a_Laplacian_Edges.png"), np.hstack([image, result_laplacian]))
-            print(f"Processed and saved: Laplacian Edges. Meta: {meta['shape']}, {meta['dtype']}")
-        else:
-            print(f"Error in Laplacian Detector: {meta['error']}")
-    except Exception as e:
-        print(f"Execution Error in Laplacian Detector: {e}", file=sys.stderr)
+    gray_image = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
 
+    low_pass_stack = np.hstack([gray_image, low_pass])
+    fil_stack = np.hstack([gray_image, fil])
+    apply_lap_stack = np.hstack([gray_image, apply_lap])
+    apply_sob_stack = np.hstack([gray_image, apply_sob])
 
-    # --- 2.4. Sobel X and Y Edge Detectors ---
-    try:
-        result_sobelx, result_sobely, result_magnitude, meta = apply_sobel_xy_detectors(
-            image,
-            ksize=5, 
-            ddepth=cv.CV_64F,
-            dx_sobel_x=1,
-            dy_sobel_x=0,
-            dx_sobel_y=0,
-            dy_sobel_y=1
-        )
-        if result_sobelx is not None and result_magnitude is not None:
-                     
-            # Save the new Sobel Magnitude image
-            cv.imwrite(os.path.join(OUT_DIR, "3d_SobelMagnitude_Edges.png"), np.hstack([image, result_magnitude]))
-            
-            print(f"Processed and saved: Sobel X/Y/Magnitude. Meta: Mag={meta['mag_meta']['shape']}, {meta['mag_meta']['dtype']}")
-        else:
-            print(f"Error in Sobel Detectors: {meta['error']}")
+    cv.imwrite("/home/user1/learning/Testing/NoiseReduction/Outputs/low_pass_stack.png", low_pass_stack)
+    cv.imwrite("/home/user1/learning/Testing/NoiseReduction/Outputs/fil_stack.png", fil_stack)
+    cv.imwrite("/home/user1/learning/Testing/NoiseReduction/Outputs/apply_lap_stack.png", apply_lap_stack)
+    cv.imwrite("/home/user1/learning/Testing/NoiseReduction/Outputs/apply_sob_stack.png", apply_sob_stack)
 
-    except Exception as e:
-        print(f"Execution Error in Sobel Detectors: {e}", file=sys.stderr)
-
-    
-    print(f"\nAll processing finished. Results saved to the '{OUT_DIR}' directory.")
+    cv.waitKey(0)
+    cv.destroyAllWindows()
