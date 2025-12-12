@@ -2,107 +2,210 @@ import cv2 as cv
 import numpy as np
 import sys
 import os
-from typing import Optional, Union
+from typing import Optional
 
-# Type hint alias for image arrays
 Image = np.ndarray
 
-def apply_scharr_operator(image: Image, blur_ksize: int = 3, threshold_val: float = 50.0) -> Image:
+
+def apply_scharr_operator(
+    image: Image,
+    *,
+    # Pre-blur
+    blur_ksize: int = 3,
+    # Scharr operator parameters (fully exposed)
+    scharr_ddepth: int = cv.CV_32F,
+    dx_scharr_x: int = 1,
+    dy_scharr_x: int = 0,
+    dx_scharr_y: int = 0,
+    dy_scharr_y: int = 1,
+    # Normalization parameters (for cv.normalize)
+    norm_dst: Optional[np.ndarray] = None,
+    norm_alpha: float = 0.0,
+    norm_beta: float = 255.0,
+    norm_type: int = cv.NORM_MINMAX,
+    # Thresholding parameters (for cv.threshold)
+    threshold_val: float = 50.0,
+    threshold_max_value: float = 255.0,
+    threshold_type: int = cv.THRESH_BINARY,
+) -> Image:
     """
-    Applies the Scharr operator to find the gradient magnitude (edges) in an image.
+    Apply the Scharr operator to compute gradient magnitude and return a binary edge map.
+    All numerical and algorithmic choices are exposed as parameters so callers control
+    each internal operation.
 
-    The Scharr operator is used to calculate the first derivatives (gradients)
-    in the X and Y directions, which are then combined to find the magnitude
-    of the edges. This implementation includes an initial blur and a final
-    binary thresholding step. 
+    -------------------------------------------------------------------------
+    PARAMETER SPECIFICATIONS (Description / Min & Max / Units / Default / Best-case)
+    -------------------------------------------------------------------------
 
-    Args:
-        image: The input grayscale image (expected uint8).
-        blur_ksize: The kernel size for the initial Gaussian blur.
-        threshold_val: The intensity threshold for binary edge visualization.
+    image : np.ndarray
+        Description: Input single-channel grayscale/thermal image.
+        Min & Max: 2D array with H,W >= 1.
+        Units: Pixel intensity.
+        Default: Required.
+        Best case: Clean uint8 thermal or camera grayscale frame.
 
-    Returns:
-        The original image horizontally stacked with the binary edge map (uint8).
+    blur_ksize : int
+        Description: Gaussian blur kernel size applied before Scharr.
+        Min & Max: Odd integers >= 1.
+        Units: Pixels (kernel size).
+        Default: 3.
+        Best case: 3–7 to reduce noise without losing edges.
+
+    scharr_ddepth : int
+        Description: OpenCV depth for Scharr output (e.g., cv.CV_32F).
+        Min & Max: Any valid cv depth enum (cv.CV_16S, cv.CV_32F, cv.CV_64F, ...).
+        Units: OpenCV enum.
+        Default: cv.CV_32F.
+        Best case: cv.CV_32F to preserve sign and magnitude.
+
+    dx_scharr_x, dy_scharr_x : int
+        Description: Derivative orders passed to Scharr for the X call (dx, dy).
+        Min & Max: 0–2.
+        Units: Derivative order.
+        Default: (1, 0).
+        Best case: (1,0) for standard X-gradient.
+
+    dx_scharr_y, dy_scharr_y : int
+        Description: Derivative orders passed to Scharr for the Y call (dx, dy).
+        Min & Max: 0–2.
+        Units: Derivative order.
+        Default: (0, 1).
+        Best case: (0,1) for standard Y-gradient.
+
+    norm_dst : Optional[np.ndarray]
+        Description: Destination array for cv.normalize (or None to let OpenCV allocate).
+        Min & Max: None or an array matching image shape.
+        Units: ndarray or None.
+        Default: None.
+        Best case: None for convenience.
+
+    norm_alpha : float
+        Description: Lower bound after normalization (alpha in cv.normalize).
+        Min & Max: 0.0 → 65535.0 (practical).
+        Units: Pixel intensity.
+        Default: 0.0.
+        Best case: 0.0 for full-range scaling.
+
+    norm_beta : float
+        Description: Upper bound after normalization (beta in cv.normalize).
+        Min & Max: 1.0 → 65535.0 (practical).
+        Units: Pixel intensity.
+        Default: 255.0.
+        Best case: 255.0 for uint8 visualization.
+
+    norm_type : int
+        Description: Normalization type (cv.NORM_MINMAX, cv.NORM_INF, ...).
+        Min & Max: Valid cv.normalize enums.
+        Units: OpenCV enum.
+        Default: cv.NORM_MINMAX.
+        Best case: cv.NORM_MINMAX for per-frame contrast scaling.
+
+    threshold_val : float
+        Description: Threshold level applied to the normalized magnitude.
+        Min & Max: 0.0 → norm_beta (practical).
+        Units: Pixel intensity (uint8 scale).
+        Default: 50.0.
+        Best case: 30–70 for typical thermal edge maps.
+
+    threshold_max_value : float
+        Description: Value assigned to pixels exceeding the threshold (maxVal).
+        Min & Max: >0.0 → 65535.0 (practical).
+        Units: Pixel intensity.
+        Default: 255.0.
+        Best case: 255.0 for crisp binary maps.
+
+    threshold_type : int
+        Description: cv threshold type (cv.THRESH_BINARY, cv.THRESH_BINARY_INV, ...).
+        Min & Max: Valid cv threshold enums.
+        Units: OpenCV enum.
+        Default: cv.THRESH_BINARY.
+        Best case: cv.THRESH_BINARY for standard edges.
+
+    RETURNS
+    -------
+    edge_map : np.ndarray (uint8, H×W)
+        Binary edge map with values {0, threshold_max_value} (clipped to uint8 if <=255).
+    -------------------------------------------------------------------------
     """
-    # 1. Initial Blur to reduce noise sensitivity
+   
+    # -----------------------
+    # Validation
+    # -----------------------
+    if image is None:
+        raise ValueError("Input `image` is None.")
+    if image.ndim != 2:
+        raise ValueError("Input must be a single-channel (grayscale) image.")
+    if blur_ksize < 1 or blur_ksize % 2 == 0:
+        raise ValueError("`blur_ksize` must be an odd integer >= 1.")
+    if not (0.0 <= norm_alpha <= norm_beta):
+        raise ValueError("`norm_alpha` must be <= `norm_beta` and both non-negative.")
+    if not (0.0 <= threshold_val <= max(255.0, norm_beta)):
+        raise ValueError("`threshold_val` must be in a reasonable range relative to norm_beta.")
+    if not (threshold_max_value > 0.0):
+        raise ValueError("`threshold_max_value` must be > 0.")
+    for v in (dx_scharr_x, dy_scharr_x, dx_scharr_y, dy_scharr_y):
+        if not (0 <= v <= 2):
+            raise ValueError("Scharr derivative orders must be integers in [0, 2].")
+
+    # -----------------------
+    # Processing pipeline
+    # -----------------------
+
+    # 1) Pre-blur
     image_blur = cv.GaussianBlur(image, (blur_ksize, blur_ksize), 0)
 
-    # 2. Apply Scharr Operator
-    # We use CV_32F (32-bit float) for the output depth to handle negative and large values
-    scharr_x = cv.Scharr(image_blur, cv.CV_32F, 1, 0) # Gradient in X direction
-    scharr_y = cv.Scharr(image_blur, cv.CV_32F, 0, 1) # Gradient in Y direction
+    # 2) Scharr gradients using external parameters
+    scharr_x = cv.Scharr(image_blur, scharr_ddepth, dx_scharr_x, dy_scharr_x)
+    scharr_y = cv.Scharr(image_blur, scharr_ddepth, dx_scharr_y, dy_scharr_y)
 
-    # 3. Calculate Gradient Magnitude
-    # Magnitude M = sqrt(Gx^2 + Gy^2)
-    # Using cv.magnitude is cleaner and potentially faster than cv.sqrt(cv.addWeighted(...))
+    # 3) Gradient magnitude
     gradient_magnitude = cv.magnitude(scharr_x, scharr_y)
 
-    # 4. Normalize and Convert to 8-bit image for visualization
-    # Scale results to 0-255 range
-    magnitude_norm = cv.normalize(gradient_magnitude, None, 0, 255, cv.NORM_MINMAX)
-    magnitude_8bit = np.uint8(magnitude_norm)
-
-    # 5. Apply Binary Thresholding for clear edge map
-    # cv.threshold returns a tuple (ret_value, result_image). We extract the result_image.
-    _, thermal_edges = cv.threshold(
-        magnitude_8bit,
-        threshold_val,
-        255,
-        cv.THRESH_BINARY
+    # 4) Normalize using parameters from outside
+    # cv.normalize returns the normalized dst (or a new array if dst is None)
+    magnitude_norm = cv.normalize(
+        gradient_magnitude,
+        norm_dst,
+        norm_alpha,
+        norm_beta,
+        norm_type
     )
 
-    # 6. Stack and return
-    # The original image and the edge map must be the same data type (uint8) for hstack
-    scharr_result = np.hstack([image, thermal_edges])
-    cv.imwrite("StructureModule/Outputs/ScharrResult.png", scharr_result)
+    # 5) Convert to 8-bit (clamp) if thresholding expects 0..255; otherwise clip to threshold_max_value range
+    # We choose to produce a uint8 binary map when threshold_max_value <= 255, else produce uint16.
+    if threshold_max_value <= 255.0:
+        magnitude_for_thresh = np.clip(np.rint(magnitude_norm), 0, 255).astype(np.uint8)
+        thresh_max_cast = float(threshold_max_value)
+    else:
+        # keep higher range in uint16 to preserve dynamic range
+        magnitude_for_thresh = np.clip(np.rint(magnitude_norm), 0, threshold_max_value).astype(np.uint16)
+        thresh_max_cast = float(threshold_max_value)
 
-    return scharr_result
+    # 6) Threshold using externally provided params
+    _, edge_map = cv.threshold(magnitude_for_thresh, threshold_val, thresh_max_cast, threshold_type)
 
+    # 7) If edge_map dtype is > uint8 but user likely wants uint8, optionally downcast if max <=255
+    if edge_map.dtype != np.uint8 and threshold_max_value <= 255.0:
+        edge_map = edge_map.astype(np.uint8)
 
-def main(image_path: str):
-    """
-    Main function to load an image, apply the Scharr edge detection operator,
-    and display the results.
-
-    Args:
-        image_path: The file path to the input image.
-    """
-    # 1. Input Validation and Loading
-    if not os.path.exists(image_path):
-        print(f"Error: Image file not found at '{image_path}'")
-        sys.exit(1)
-
-    # Load the image in grayscale (0 flag)
-    image = cv.imread(image_path, cv.IMREAD_GRAYSCALE)
-
-    if image is None:
-        print(f"Error: Could not load image from '{image_path}'. Check file integrity.")
-        sys.exit(1)
-
-    print(f"Image loaded successfully: {image.shape}")
-
-    # 2. Apply the Scharr filter
-    # Edge map is stacked with the original image inside the function
-    scharr_stacked_image = apply_scharr_operator(
-        image=image,
-        blur_ksize=3,
-        threshold_val=50.0
-    )
-
-    # 3. Display Result
-    cv.imshow("Original | Scharr Edge Map", scharr_stacked_image)
-
-    # 4. Cleanup
-    cv.waitKey(0)
-    cv.destroyAllWindows()
-    print("Program finished.")
+    return edge_map
 
 
 if __name__ == "__main__":
-    # NOTE: Update this path to point to your actual image file.
-    # Placeholder path for industrial standard structure.
-    # Example: IMAGE_FILE_PATH = "C:/path/to/my/image.png"
-    IMAGE_FILE_PATH = "StructureModule/Inputs/Input.jpg"
-    
-    # Execute the main function
-    main(IMAGE_FILE_PATH)
+    # Path to image (change to your path)
+    image_path = "/home/user1/learning/Testing/StructureModule/Inputs/Input.jpg"
+
+    # Read as grayscale (function expects a single-channel image)
+    src = cv.imread(image_path, cv.IMREAD_GRAYSCALE)
+    if src is None:
+        print(f"ERROR: Failed to load image at: {image_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Call your operator (keeps texture/logic unchanged)
+    edge_map = apply_scharr_operator(image=src)
+
+    # Show results
+    cv.imshow("input_gray", src)
+    cv.imshow("apply_scharr_edge_map", edge_map)
+    cv.waitKey(0)
+    cv.destroyAllWindows()

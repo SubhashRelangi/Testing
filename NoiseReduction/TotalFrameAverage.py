@@ -265,7 +265,7 @@ def total_temporal_average(
         end_time = time.perf_counter()
         total_time = end_time - start_time
 
-        print(f"[Wavelet Denoise] Time Taken: {total_time:.6f} seconds")
+        print(f"[total_temporal_average] Time Taken: {total_time:.6f} seconds")
 
         return avg_out
 
@@ -506,7 +506,7 @@ def recursive_temporal_average(
         end_time = time.perf_counter()
         total_time = end_time - start_time
 
-        print(f"[Wavelet Denoise] Time Taken: {total_time:.6f} seconds")
+        print(f"[recursive_temporal_average] Time Taken: {total_time:.6f} seconds")
         return avg_out
     
 
