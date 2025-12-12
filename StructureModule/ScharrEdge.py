@@ -1,7 +1,7 @@
 import cv2 as cv
 import numpy as np
 import sys
-import os
+import time
 from typing import Optional
 
 Image = np.ndarray
@@ -127,6 +127,8 @@ def apply_scharr_operator(
         Binary edge map with values {0, threshold_max_value} (clipped to uint8 if <=255).
     -------------------------------------------------------------------------
     """
+
+    start_time = time.time()
    
     # -----------------------
     # Validation
@@ -187,6 +189,9 @@ def apply_scharr_operator(
     # 7) If edge_map dtype is > uint8 but user likely wants uint8, optionally downcast if max <=255
     if edge_map.dtype != np.uint8 and threshold_max_value <= 255.0:
         edge_map = edge_map.astype(np.uint8)
+
+    end_time = time.time()
+    print(f"[apply_scharr_operator] Start: {start_time:.6f}  End: {end_time:.6f}  Duration: {end_time - start_time:.6f} sec")
 
     return edge_map
 

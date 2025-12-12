@@ -265,7 +265,7 @@ def HighPassEdge(
         uint8 image (H×W) with enhanced edges/sharpness.
     """
        
-    start_time = time.perf_counter()
+    start_time = time.time()
     # validation
     if image is None:
         raise ValueError("Input image is None.")
@@ -319,17 +319,17 @@ def HighPassEdge(
 
         # normalize
         out_image = cv.normalize(magnitude_image, norm_dst, norm_alpha, norm_beta, norm_type)
+
+        end_time = time.time() 
+        total_time = end_time - start_time 
+        print(f"[HighPassEdge] Time Taken: {total_time:.6f} seconds")
         
         return out_image.astype(np.uint8)
 
     except Exception as exc:
         raise RuntimeError(f"HighPassEdge failed: {exc}")
-    
-    finally:
 
-       end_time = time.perf_counter() 
-       total_time = end_time - start_time 
-       print(f"[HighPassEdge] Time Taken: {total_time:.6f} seconds")
+       
 
 
 

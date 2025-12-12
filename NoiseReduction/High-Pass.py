@@ -109,16 +109,16 @@ def subtract_low_pass(
         blurred = cv.GaussianBlur(img_f, gblur_ksize, sigma)
         high_pass = img_f - blurred + offset
         out_image = np.clip(high_pass, min_clip, max_clip).astype(np.uint8)
-        return out_image
 
-    except Exception:
-        return None
-
-    finally:
         end_time = time.perf_counter()
         total_time = end_time - start_time
         print(f"[subtract_low_pass] Time Taken: {total_time:.6f} seconds")
 
+
+        return out_image
+
+    except Exception:
+        return None
 
 def convolve_with_kernel(
     image: Image,
@@ -162,15 +162,15 @@ def convolve_with_kernel(
         filtered = cv.filter2D(img, ddepth=ddepth, kernel=kernel)
         # normalize/clip to uint8 for safe downstream use
         out_image = _to_uint8(filtered)
+
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        print(f"[convolve_with_kernel] Time Taken: {total_time:.6f} seconds")
+
         return out_image
 
     except Exception:
         return None
-
-    finally:
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
-        print(f"[convolve_with_kernel] Time Taken: {total_time:.6f} seconds")
 
 
 def apply_laplacian_detector(
@@ -213,15 +213,17 @@ def apply_laplacian_detector(
     try:
         lap = cv.Laplacian(img, ddepth=ddepth, ksize=ksize)
         out_image = _to_uint8(np.abs(lap))
+
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        print(f"[apply_laplacian_detector] Time Taken: {total_time:.6f} seconds")
+
         return out_image
 
     except Exception:
         return None
 
-    finally:
-        end_time = time.perf_counter()
-        total_time = end_time - start_time
-        print(f"[apply_laplacian_detector] Time Taken: {total_time:.6f} seconds")
+
 
 
 def apply_sobel_xy_detectors(
@@ -345,16 +347,16 @@ def apply_sobel_xy_detectors(
             dtype=norm_dtype
         )
 
+        end_time = time.perf_counter() 
+        total_time = end_time - start_time 
+        print(f"[apply_sobel_xy_detectors] Time Taken: {total_time:.6f} seconds")
+
         return magnitude_norm
 
     except Exception:
         return None
 
-    finally:
-
-       end_time = time.perf_counter() 
-       total_time = end_time - start_time 
-       print(f"[apply_sobel_xy_detectors] Time Taken: {total_time:.6f} seconds")
+       
  
 
 if __name__ == "__main__":

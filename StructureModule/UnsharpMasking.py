@@ -1,135 +1,145 @@
 import cv2 as cv
 import numpy as np
-import sys
-import os
-from typing import Optional, Union, Tuple
+import time
+from typing import Tuple, Union, Optional
 
-# Type hint alias for image arrays
-Image = np.ndarray
-
-# Define the output directory at the module level for consistency
-OUTPUT_DIR = "/home/user1/learning/Testing/StructureModule/Outputs"
+ImageArray = np.ndarray
 
 
-def ensure_output_directory(output_dir: str):
-    """
-    Checks if the specified directory exists, and creates it if it does not.
+def _ensure_odd_positive_int_pair(ksize: Tuple[int, int]) -> Tuple[int, int]:
+    if not (isinstance(ksize, tuple) and len(ksize) == 2):
+        raise TypeError("blur_ksize must be a tuple of two ints (odd, positive).")
+    kx, ky = int(ksize[0]), int(ksize[1])
+    if kx <= 0 or ky <= 0:
+        raise ValueError("blur_ksize elements must be positive.")
 
-    Args:
-        output_dir: The path to the directory to create.
-    """
-    if not os.path.exists(output_dir):
-        try:
-            # Create directory if it doesn't exist; exist_ok=True prevents error if already exists
-            os.makedirs(output_dir, exist_ok=True)
-            print(f"Created output directory: {output_dir}")
-        except Exception as e:
-            print(f"Error creating directory {output_dir}: {e}")
-            sys.exit(1)
+    # Force odd values
+    if kx % 2 == 0:
+        kx += 1
+    if ky % 2 == 0:
+        ky += 1
+
+    return (kx, ky)
 
 
 def apply_unsharp_masking(
-    image: Image,
-    k_size: Tuple[int, int] = (5, 5),
-    sigma: float = 0.0,
-    alpha: float = 3.0
-) -> Image:
+    image: Union[str, ImageArray],
+    *,
+    blur_ksize: Tuple[int, int] = (5, 5),
+    blur_sigma_x: float = 0.0,
+    blur_sigma_y: float = 0.0,
+    mask_scale: float = 1.0,
+    sharp_alpha: float = 3.0,
+    mask_add_bias: float = 128.0,      # kept for internal consistency
+    mask_clip_min: float = 0.0,
+    mask_clip_max: float = 255.0,
+    out_min: float = 0.0,
+    out_max: float = 255.0,
+    output_dtype: Optional[Union[str, np.dtype]] = None,
+) -> ImageArray:
     """
-    Applies the Unsharp Masking (USM) technique to sharpen an image.
-
-    The process enhances high-frequency details by:
-    1. Creating a blurred (low-pass) version of the image.
-    2. Subtracting the blurred image from the original to get a high-frequency mask (detail map).
-    3. Adding the scaled mask back to the original image to enhance details. 
-
-    Args:
-        image: The input grayscale image (expected uint8).
-        k_size: The kernel size for the Gaussian blur (low-pass filter). Must be odd and positive.
-        sigma: The standard deviation (sigma) for the Gaussian blur. (0.0 means calculated from k_size).
-        alpha: The sharpening strength (or 'Amount'). A higher value increases sharpening.
-
-    Returns:
-        The original image horizontally stacked with the mask and the sharpened result (uint8).
+    Apply Unsharp Masking (USM) to an image.
+    Returns ONLY the sharpened output image.
     """
-    # 1. Convert to floating-point BEFORE arithmetic operations
-    image_float = image.astype(np.float32)
 
-    # 2. Create the Blurred Image (Low-Pass Filter)
-    blurred_Image_float = cv.GaussianBlur(image_float, ksize=k_size, sigmaX=sigma, sigmaY=sigma)
+    start_time = time.perf_counter()
 
-    # 3. Create the Mask (High-Pass Filter/Detail Map)
-    # Mask = Original - Blurred
-    Mask_float = image_float - blurred_Image_float
+    # -------------------------
+    # Load / convert input
+    # -------------------------
+    if image is None:
+        raise ValueError("Input image is None.")
 
-    # 4. Sharpen the Image (Sharpened = Original + Mask * Alpha)
-    sharpedImage_float = image_float + Mask_float * alpha
+    if isinstance(image, str):
+        img = cv.imread(image, cv.IMREAD_GRAYSCALE)
+        if img is None:
+            raise FileNotFoundError(f"Could not read image at path: {image}")
+    else:
+        img = np.asarray(image)
 
-    # 5. Clip and Convert to uint8
-    # Clip results to the valid range [0, 255]
-    sharpedImage_float = np.clip(sharpedImage_float, 0, 255)
-    sharpedImage_uint8 = sharpedImage_float.astype(np.uint8)
+    if img.size == 0:
+        raise ValueError("Input image is empty.")
 
-    # 6. Stack results for visualization: Original | Mask | Sharpened
-    # NOTE: Add 128 to the float mask and clip for visible stacking (centers zero-detail at mid-gray)
-    mask_for_display = np.clip(Mask_float + 128, 0, 255).astype(np.uint8)
-    
-    output_stacked = np.hstack([image, mask_for_display, sharpedImage_uint8])
+    # Use only first channel if multi-channel
+    if img.ndim > 2:
+        img = img[..., 0]
 
-    return output_stacked
+    if img.ndim != 2:
+        raise ValueError(f"Expected 2D grayscale image, got {img.shape}")
 
+    orig_dtype = img.dtype
 
-def main(image_path: str):
-    """
-    Main function to load an image, apply Unsharp Masking with specific parameters,
-    and display/save the visualization results.
+    # -------------------------
+    # Convert to float32
+    # -------------------------
+    if np.issubdtype(orig_dtype, np.floating):
+        img_f = np.clip(img, 0.0, 1.0).astype(np.float32) * 255.0
 
-    Args:
-        image_path: The file path to the input image.
-    """
-    # 1. Setup and Validation
-    ensure_output_directory(OUTPUT_DIR)
-    
-    if not os.path.exists(image_path):
-        print(f"Error: Image file not found at '{image_path}'")
-        sys.exit(1)
+    elif orig_dtype == np.uint8:
+        img_f = img.astype(np.float32)
 
-    # Load the image in grayscale (0 flag)
-    image_uint8 = cv.imread(image_path, cv.IMREAD_GRAYSCALE)
+    elif orig_dtype == np.uint16:
+        img_f = (img.astype(np.float32) / 65535.0) * 255.0
 
-    if image_uint8 is None:
-        print(f"Error: Could not load image from '{image_path}'. Check file integrity.")
-        sys.exit(1)
+    else:
+        raise TypeError("Unsupported dtype. Allowed: uint8, uint16, float32, float64.")
 
-    print(f"Image loaded successfully: {image_uint8.shape}")
+    # -------------------------
+    # Gaussian Blur
+    # -------------------------
+    blur_ksize = _ensure_odd_positive_int_pair(blur_ksize)
 
-    # 2. Configuration & Application (Using your chosen parameters)
-    K_SIZE = (5, 5)
-    SIGMA = 0.0
-    ALPHA = 3.0
-    
-    output_stacked = apply_unsharp_masking(
-        image=image_uint8,
-        k_size=K_SIZE,
-        sigma=SIGMA,
-        alpha=ALPHA
+    blurred_f = cv.GaussianBlur(
+        img_f,
+        ksize=blur_ksize,
+        sigmaX=float(blur_sigma_x),
+        sigmaY=float(blur_sigma_y),
     )
 
-    # 3. Display and Save Results
-    cv.imshow("Original | High-Frequency Mask | Sharpened Image", output_stacked)
-    
-    output_filename = os.path.join(OUTPUT_DIR, "UnsharpMaskingResult.png")
-    cv.imwrite(output_filename, output_stacked)
-    print(f"Result saved to {output_filename}")
+    # -------------------------
+    # High-pass mask & Sharpening
+    # -------------------------
+    mask_f = (img_f - blurred_f) * float(mask_scale)
 
-    # 4. Cleanup
-    cv.waitKey(0)
-    cv.destroyAllWindows()
-    print("Program finished.")
+    sharpened_f = img_f + (mask_f * float(sharp_alpha))
+
+    # -------------------------
+    # Clip output
+    # -------------------------
+    sharpened_clipped = np.clip(sharpened_f, out_min, out_max)
+
+    # -------------------------
+    # Convert to output dtype
+    # -------------------------
+    if output_dtype is None:
+        out_dtype = np.uint8
+    else:
+        out_dtype = np.dtype(output_dtype)
+
+    if out_dtype == np.uint8:
+        output = sharpened_clipped.astype(np.uint8)
+
+    elif out_dtype == np.uint16:
+        output = (sharpened_clipped.astype(np.uint16) * 257)
+
+    else:
+        output = sharpened_clipped.astype(out_dtype)
+
+    end_time = time.perf_counter()
+    print(f"{'apply_unsharp_masking execution time:':<36}{end_time - start_time:.4f} seconds")
+
+    return output
 
 
 if __name__ == "__main__":
-    # NOTE: Update this path to point to your actual image file.
-    IMAGE_FILE_PATH = "StructureModule/Inputs/Input.jpg"
-    
-    # Execute the main function
-    main(IMAGE_FILE_PATH)
+    image = "/home/user1/learning/Testing/StructureModule/Inputs/Input.jpg"
+
+    result = apply_unsharp_masking(image)
+
+    # For display
+    original = cv.imread(image)
+    cv.imshow("Original Image", original)
+    cv.imshow("USM Result", result)
+
+    cv.waitKey(0)
+    cv.destroyAllWindows()
