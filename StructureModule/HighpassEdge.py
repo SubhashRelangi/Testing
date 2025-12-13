@@ -4,6 +4,90 @@ import numpy as np
 import time
 
 
+
+def calculate_enhancement_scores(
+    input_image: np.ndarray,
+    output_image: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Calculate objective enhancement scores using only
+    input and output images.
+
+    Returns relative gains (>1 means increase).
+    """
+
+    # -----------------------------
+    # Validation
+    # -----------------------------
+    if input_image is None or output_image is None:
+        raise ValueError("Input or output image is None.")
+
+    if input_image.ndim != 2 or output_image.ndim != 2:
+        raise ValueError("Both images must be single-channel.")
+
+    if input_image.shape != output_image.shape:
+        raise ValueError("Input and output images must have same shape.")
+
+    # Convert to float32 for stable math
+    inp = np.float32(input_image)
+    out = np.float32(output_image)
+
+    # -----------------------------
+    # 1. Edge strength gain
+    # -----------------------------
+    lap_in = cv.Laplacian(inp, cv.CV_32F)
+    lap_out = cv.Laplacian(out, cv.CV_32F)
+
+    edge_gain = lap_out.var() / (lap_in.var() + 1e-8)
+
+    # -----------------------------
+    # 2. Contrast gain
+    # -----------------------------
+    contrast_gain = out.std() / (inp.std() + 1e-8)
+
+    # -----------------------------
+    # 3. High-frequency energy gain
+    # -----------------------------
+    def hf_energy(img: np.ndarray) -> float:
+        F = cv.dft(img, flags=cv.DFT_COMPLEX_OUTPUT)
+        F_shift = np.fft.fftshift(F)
+
+        h, w = img.shape
+        cx, cy = w // 2, h // 2
+
+        u = np.arange(w)
+        v = np.arange(h)
+        U, V = np.meshgrid(u, v)
+        D = np.sqrt((U - cx) ** 2 + (V - cy) ** 2)
+
+        # Simple high-pass mask
+        R = min(h, w) * 0.1
+        mask = (D > R).astype(np.float32)
+        mask2 = cv.merge([mask, mask])
+
+        HF = F_shift * mask2
+        mag = cv.magnitude(HF[:, :, 0], HF[:, :, 1])
+        return float(np.mean(np.abs(mag)))
+
+    hf_energy_gain = hf_energy(out) / (hf_energy(inp) + 1e-8)
+
+    # -----------------------------
+    # 4. Noise amplification ratio
+    # -----------------------------
+    noise_in = np.median(np.abs(inp - cv.GaussianBlur(inp, (5, 5), 0)))
+    noise_out = np.median(np.abs(out - cv.GaussianBlur(out, (5, 5), 0)))
+
+    noise_gain = noise_out / (noise_in + 1e-8)
+
+    return {
+        "edge_gain": float(edge_gain),
+        "contrast_gain": float(contrast_gain),
+        "hf_energy_gain": float(hf_energy_gain),
+        "noise_gain": float(noise_gain),
+    }
+
+
+
 # =====================================================
 # 1. FREQUENCY MASK GENERATOR (MODULAR & FLEXIBLE)
 # =====================================================
@@ -354,6 +438,12 @@ if __name__ == "__main__":
         norm_beta=255.0,             # float
         norm_type=cv.NORM_MINMAX     # int (OpenCV constant)
     )
+
+    scores = calculate_enhancement_scores(image, enhanced)
+
+    print("\n[Enhancement Scores]")
+    for k, v in scores.items():
+        print(f"{k}: {v:.3f}")
 
     cv.imshow("Original", image)
     cv.imshow("Enhanced", enhanced)
