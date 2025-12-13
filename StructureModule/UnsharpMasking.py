@@ -2,8 +2,70 @@ import cv2 as cv
 import numpy as np
 import time
 from typing import Tuple, Union, Optional
+from skimage.metrics import structural_similarity as ssim
+
 
 ImageArray = np.ndarray
+
+
+def sharpness_score(image: np.ndarray) -> float:
+    """
+    Compute sharpness score using Variance of Laplacian.
+
+    Higher value => sharper image
+    """
+    if image.ndim != 2:
+        raise ValueError("sharpness_score expects a single-channel image")
+
+    lap = cv.Laplacian(image, cv.CV_64F)
+    return float(lap.var())
+
+
+def ssim_score(
+    reference: np.ndarray,
+    processed: np.ndarray
+) -> float:
+    """
+    Compute SSIM between input and output images.
+
+    Range: 0.0 – 1.0 (higher is better)
+    """
+    if reference.shape != processed.shape:
+        raise ValueError("Images must have the same shape for SSIM")
+
+    return float(
+        ssim(
+            reference,
+            processed,
+            data_range=processed.max() - processed.min()
+        )
+    )
+
+
+
+
+def compare_images(
+    input_image: np.ndarray,
+    output_image: np.ndarray
+) -> dict:
+    """
+    Compare input and output images and return quality scores.
+    """
+
+    sharp_in = sharpness_score(input_image)
+    sharp_out = sharpness_score(output_image)
+
+    sharpness_gain = sharp_out / sharp_in if sharp_in != 0 else 0.0
+    structure_similarity = ssim_score(input_image, output_image)
+
+    return {
+        "sharpness_input": sharp_in,
+        "sharpness_output": sharp_out,
+        "sharpness_gain": sharpness_gain,
+        "ssim": structure_similarity,
+    }
+
+
 
 
 def _ensure_odd_positive_int_pair(ksize: Tuple[int, int]) -> Tuple[int, int]:
@@ -189,7 +251,24 @@ def apply_unsharp_masking(
 if __name__ == "__main__":
     image = "/home/user1/learning/Testing/StructureModule/Inputs/Input.jpg"
 
-    result = apply_unsharp_masking(image)
+    result = apply_unsharp_masking(
+            image,
+            blur_ksize=(5, 5),
+            blur_sigma_x=0.0,
+            blur_sigma_y=0.0,
+            mask_scale=0.6,
+            sharp_alpha=1.5,
+            out_min=0.0,
+            out_max=255.0,
+            output_dtype=np.uint8
+        )
+
+    original = cv.imread(image, cv.IMREAD_GRAYSCALE)
+
+    scores = compare_images(original, result)
+
+    print(f"Sharpness gain : {scores['sharpness_gain']:.2f}x")
+    print(f"SSIM           : {scores['ssim']:.4f}")
 
     # For display
     original = cv.imread(image)
